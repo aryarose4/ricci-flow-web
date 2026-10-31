@@ -39,7 +39,10 @@ export class FixtureSolver implements Solver {
       const f = doc.frames[k];
       onFrame({
         t: f.t, faces: faceSets[f.faceSet], vertices: new Float32Array(f.vertices), u: new Float32Array(f.u),
-        K: new Float32Array(f.K), L: new Float32Array(f.L), gbError: f.gbError ?? 0,
+        K: new Float32Array(f.K), Kdef: new Float32Array(f.Kdef), Avert: new Float32Array(f.Avert), rho: f.rho ?? doc.rho,
+        polytope: k === 0 && doc.request.seed_surface === 'polytope',
+        wGrid: f.cfW && doc.cfGrid ? { nx: doc.cfGrid.nx, ny: doc.cfGrid.ny, values: new Float32Array(f.cfW), extent: doc.cfGrid.extent } : null,
+        L: new Float32Array(f.L), gbError: f.gbError ?? 0,
         lenRelRms: f.lenRelRms ?? undefined, coneDefectErr: f.coneDefectErr ?? undefined,
         quality: k === nf - 1 ? doc.quality : null, progress: (k + 1) / nf,
       });

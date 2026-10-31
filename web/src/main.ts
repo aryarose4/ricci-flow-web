@@ -1,24 +1,26 @@
 import './style.css';
 import { View3D, type Overlay, type Shading } from './view3d';
-import { CfView } from './cfview';
+import { CfDiscs } from './cfview';
+import { PICNIC_CSS } from './shading';
+import { SENSITIVITY, SENSITIVITY_DEFAULT } from './curvature';
 import type { FlowFrame, FlowMeta, FlowRequest, FromWorker, SeedSurface, ToWorker } from './solver';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const fixturesBase = new URL('fixtures/', document.baseURI).href;
 
 // ---------- theme ----------
-let dark = matchMedia('(prefers-color-scheme: dark)').matches;
-try { const s = localStorage.getItem('theme'); if (s) dark = s === 'dark'; } catch { /* ignore */ }
+let dark = true; // the Python page defaults to dark; the choice is remembered under the same key
+try { const s = localStorage.getItem('sr-theme'); if (s) dark = s === 'dark'; } catch { /* ignore */ }
 
 const view = new View3D($('cv') as HTMLCanvasElement, $('lbls'));
-const cfN = new CfView($('cf-n') as HTMLCanvasElement, true);
-const cfS = new CfView($('cf-s') as HTMLCanvasElement, false);
+const cf = new CfDiscs([$('cf-n') as HTMLCanvasElement, $('cf-s') as HTMLCanvasElement]);
+$('lg-bar').style.background = PICNIC_CSS;
 
 function applyTheme() {
   document.documentElement.dataset.theme = dark ? 'dark' : 'light';
   $('theme').textContent = dark ? 'Light mode' : 'Dark mode';
-  view.setTheme(dark); cfN.setTheme(dark); cfS.setTheme(dark);
-  try { localStorage.setItem('theme', dark ? 'dark' : 'light'); } catch { /* ignore */ }
+  view.setTheme(dark); cf.setTheme(dark);
+  try { localStorage.setItem('sr-theme', dark ? 'dark' : 'light'); } catch { /* ignore */ }
   redraw();
 }
 $('theme').onclick = () => { dark = !dark; applyTheme(); };
@@ -37,16 +39,17 @@ function radios(host: HTMLElement, name: string, opts: [string, string][], init:
 let seed: SeedSurface = 'gluing';
 const setSeedUI = radios($('seed'), 'seed', [['gluing', 'Cone Gluing'], ['smart', 'Smart Seed'], ['polytope', 'Polytope']], seed, v => { seed = v as SeedSurface; });
 radios($('shade'), 'shade', [['reflective', 'Reflective'], ['plain', 'Plain'], ['wireframe', 'Wireframe']], 'reflective', v => { view.shading = v as Shading; view.render(); });
-radios($('overlay'), 'overlay', [['none', 'None'], ['length', 'Length Fit'], ['gauss', 'Gaussian Curvature']], 'none', v => { view.overlay = v as Overlay; view.render(); updateLegend(); });
+radios($('overlay'), 'overlay', [['none', 'None'], ['length', 'Length Fit'], ['gauss', 'Gaussian Curvature']], 'none', v => { $('sens').hidden = v === 'none'; view.setOverlay(v as Overlay); updateLegend(); });
+radios($('curvscale'), 'curvscale', SENSITIVITY.map(([v, n]) => [v, n] as [string, string]), SENSITIVITY_DEFAULT, v => view.setSensitivity(parseFloat(v)));
 
 function updateLegend() {
   const lg = $('legend'), on = view.overlay !== 'none';
   lg.hidden = !on;
   if (!on) return;
-  const m = view.legendRange, f = (x: number) => (x >= 0 ? '+' : '−') + Math.abs(x).toPrecision(2);
+  const [mlo, mhi] = view.legendRange;
   $('lg-title').textContent = view.overlay === 'length' ? 'Length Fit' : 'Gaussian Curvature';
-  $('lg-mid').textContent = view.overlay === 'length' ? 'Target' : 'ρ';
-  $('lg-lo').textContent = f(-m); $('lg-hi').textContent = f(m);
+  $('lg-mid').textContent = 'Target';
+  $('lg-lo').textContent = '−' + mlo.toPrecision(2); $('lg-hi').textContent = '+' + mhi.toPrecision(2);
 }
 view.onLegend = updateLegend;
 
@@ -101,15 +104,15 @@ fixSel.onchange = () => {
 const worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });
 let runId = 0, running = false, meta: FlowMeta | null = null;
 let frames: FlowFrame[] = [];
-let lo = Infinity, hi = -Infinity, cur = 0;
+let cur = 0;
 let timer: number | null = null;
 
 worker.onmessage = (ev: MessageEvent<FromWorker>) => {
   const m = ev.data;
   if (m.id !== runId) return;
   if (m.type === 'meta') {
-    meta = m.meta; frames = []; lo = Infinity; hi = -Infinity;
-    view.reset(m.meta); cfN.reset(m.meta); cfS.reset(m.meta);
+    meta = m.meta; frames = [];
+    view.reset(m.meta); cf.reset(m.meta);
     $('st-v').textContent = String(m.meta.sphereVertices.length / 3);
     $('st-e').textContent = String(m.meta.edges.length / 2);
     $('st-f').textContent = String(m.meta.sphereFaces.length / 3);
@@ -117,7 +120,6 @@ worker.onmessage = (ev: MessageEvent<FromWorker>) => {
     setStatus(`Flowing (${m.meta.request.fixture ?? 'live'}): ${m.meta.label ?? ''}`);
   } else if (m.type === 'frame') {
     const f = m.frame; frames.push(f);
-    for (const x of f.u) { if (x < lo) lo = x; if (x > hi) hi = x; }
     cur = frames.length - 1; showFrame();
     $('loadpct').textContent = `${Math.round(100 * f.progress)}%`;
     if (f.quality) setQuality(f.quality.label, f.quality.ok, f.quality.detail);
@@ -136,7 +138,7 @@ function fmt(x: number | undefined | null) { return x == null || !isFinite(x) ? 
 
 function showFrame() {
   const f = frames[cur]; if (!f || !meta) return;
-  view.setFrame(f); cfN.setFrame(f, lo, hi); cfS.setFrame(f, lo, hi);
+  view.setFrame(f, frames[0]); cf.setFrame(f);
   const sl = $('play') as HTMLInputElement; sl.max = String(Math.max(0, frames.length - 1)); sl.value = String(cur);
   $('tval').textContent = `t = ${f.t.toPrecision(3)}`;
   $('playlbl').textContent = `frame ${cur + 1} / ${meta.nFrames ?? frames.length}`;
