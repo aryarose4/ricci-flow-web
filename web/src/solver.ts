@@ -67,8 +67,12 @@ export interface Solver {
 // worker protocol
 export type ToWorker =
   | { cmd: 'start'; id: number; req: FlowRequest; solver: 'fixture' | 'wasm'; baseUrl: string }
+  | { cmd: 'preview'; id: number; req: FlowRequest }
   | { cmd: 'stop'; id: number };
+export interface PreviewData { vertices: Float32Array; faces: Uint32Array; edges: Uint32Array; coneIds: number[]; rho: number; ms: number; clamped: boolean; }
 export type FromWorker =
+  | { type: 'preview'; id: number; data: PreviewData }
+  | { type: 'preview-fail'; id: number; message: string }
   | { type: 'meta'; id: number; meta: FlowMeta }
   | { type: 'frame'; id: number; frame: FlowFrame }
   | { type: 'progress'; id: number; progress: number; phase: string }

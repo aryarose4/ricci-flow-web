@@ -1,7 +1,20 @@
 import init, { FlowSession, type FlowFrame as WFrame } from '../../core/pkg/ricci_core.js';
-import type { FlowFrame, FlowMeta, FlowRequest, Quality, Solver } from './solver';
+import type { FlowFrame, FlowMeta, FlowRequest, PreviewData, Quality, Solver } from './solver';
 
 let ready: Promise<unknown> | null = null;
+
+/** Cheap preview: build the session (mesh + cap seed) and read the preview polyhedron, without running the flow. */
+export async function previewOf(req: FlowRequest): Promise<PreviewData> {
+  await (ready ??= init());
+  const t0 = performance.now();
+  const s = new FlowSession(new Float64Array(req.positions.flat()), new Float64Array(req.betas), req.seed, req.level ?? 'coarse');
+  try {
+    return {
+      vertices: Float32Array.from(s.preview_vertices()), faces: s.faces(), edges: s.edges(), coneIds: Array.from(s.cones()),
+      rho: (req.betas.reduce((a, b) => a + b, 0) - (req.betas.length - 2)) / 2, clamped: s.clamped(), ms: performance.now() - t0,
+    };
+  } finally { s.free(); }
+}
 
 /** Live solver: drives a core FlowSession one chunk at a time inside the worker (terminate the worker to stop). */
 export class WasmSolver implements Solver {

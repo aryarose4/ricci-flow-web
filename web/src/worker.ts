@@ -1,13 +1,18 @@
 /// <reference lib="webworker" />
 import type { FromWorker, ToWorker } from './solver';
 import { FixtureSolver } from './fixtureSolver';
-import { WasmSolver } from './wasmSolver';
+import { WasmSolver, previewOf } from './wasmSolver';
 
 const ctl = new Map<number, AbortController>();
 const post = (m: FromWorker, tr: Transferable[] = []) => (self as unknown as Worker).postMessage(m, tr);
 
 self.onmessage = async (ev: MessageEvent<ToWorker>) => {
   const m = ev.data;
+  if (m.cmd === 'preview') {
+    try { post({ type: 'preview', id: m.id, data: await previewOf(m.req) }); }
+    catch (e) { post({ type: 'preview-fail', id: m.id, message: String((e as Error).message ?? e) }); }
+    return;
+  }
   if (m.cmd === 'stop') { ctl.get(m.id)?.abort(); return; }
   const ac = new AbortController();
   ctl.set(m.id, ac);

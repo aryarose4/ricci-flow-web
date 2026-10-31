@@ -46,9 +46,9 @@ function radios(host: HTMLElement, name: string, opts: Opt[], init: string, onCh
   return (v: string) => { host.querySelectorAll('input').forEach(i => { i.checked = i.value === v; }); };
 }
 let seed: SeedSurface = 'gluing', level: Level = 'coarse', smoothOn = true;
-const setSeedUI = radios($('seed'), 'seed', [['gluing', 'Cone Gluing'], ['smart', 'Smart Seed'], ['polytope', 'Polytope']], seed, v => { seed = v as SeedSurface; });
+const setSeedUI = radios($('seed'), 'seed', [['gluing', 'Cone Gluing'], ['smart', 'Smart Seed'], ['polytope', 'Polytope']], seed, v => { seed = v as SeedSurface; configChanged(); });
 radios($('realizer'), 'realizer', [['true_flow', 'True Ricci Flow'], ['fast', 'Fast Uniformizer', 'not yet ported']], 'true_flow', () => { /* only True Ricci Flow is available */ });
-const setLevelUI = radios($('ressel'), 'ressel', [['coarse', 'Coarse'], ['medium', 'Medium'], ['fine', 'Fine'], ['extra', 'Extra Fine']], level, v => { level = v as Level; });
+const setLevelUI = radios($('ressel'), 'ressel', [['coarse', 'Coarse'], ['medium', 'Medium'], ['fine', 'Fine'], ['extra', 'Extra Fine']], level, v => { level = v as Level; configChanged(); });
 const setSmoothUI = radios($('fpsmooth'), 'fpsmooth', [['off', 'Off'], ['on', 'On']], 'on', v => { smoothOn = v === 'on'; });
 radios($('shade'), 'shade', [['reflective', 'Reflective'], ['plain', 'Plain'], ['wireframe', 'Wireframe']], 'reflective', v => { view.shading = v as Shading; view.render(); });
 radios($('overlay'), 'overlay', [['none', 'None'], ['length', 'Length Fit'], ['gauss', 'Gaussian Curvature']], 'none', v => { $('sens').hidden = v === 'none'; view.setOverlay(v as Overlay); updateLegend(); });
@@ -79,6 +79,7 @@ function updateRho() {
 function configChanged() {
   if (running || frames.length || meta) toPreview();
   updateRho(); cf.setPreview(betas, positions); cf.setMarkers(true);
+  requestPreview(false);
 }
 let sliderEls: { sl: HTMLInputElement; lab: HTMLLabelElement }[] = [];
 function buildSliders(n: number) {
@@ -97,7 +98,9 @@ function buildSliders(n: number) {
 $('nsel').onchange = () => { betas = []; buildSliders(+($('nsel') as HTMLSelectElement).value); };
 cf.onDragCone = (i, pos, fin) => {
   positions[i] = [pos[0], pos[1]];
-  if (!fin) { cf.setPreview(betas, positions); cf.setMarkers(true); }
+  if (running || frames.length) toPreview();
+  cf.setPreview(betas, positions); cf.setMarkers(true);
+  requestPreview(!fin);   // live: throttled while dragging, latest wins
 };
 
 // ---------- solver worker ----------
@@ -108,6 +111,37 @@ let frames: Fr[] = [];
 let cur = 0;
 let cfShown: Fr | null = null;
 worker.onmessage = onWorker;
+
+// ---------- live seed preview (own worker, so a running flow is never disturbed) ----------
+const pworker = spawn();
+let pId = 0, pBusy = false, pDirty = false, pTimer: number | null = null, pLast = 0, pReq: FlowRequest | null = null;
+let previewMs = NaN;
+function currentReq(): FlowRequest { return { n: betas.length, betas: betas.slice(), positions: positions.map(p => [...p] as [number, number]), seed, level }; }
+/** Debounced (150 ms) for sliders/radios, throttled (~60 ms) during cone drags; one request in flight, latest wins. */
+function requestPreview(drag: boolean) {
+  if (running) return;
+  if (pTimer != null) clearTimeout(pTimer);
+  const wait = drag ? Math.max(0, 60 - (performance.now() - pLast)) : 150;
+  pTimer = window.setTimeout(() => { pTimer = null; sendPreview(); }, wait);
+}
+function sendPreview() {
+  if (running) return;
+  if (pBusy) { pDirty = true; return; }
+  pBusy = true; pDirty = false; pReq = currentReq(); pLast = performance.now();
+  pworker.postMessage({ cmd: 'preview', id: ++pId, req: pReq } satisfies ToWorker);
+}
+pworker.onmessage = (ev: MessageEvent<FromWorker>) => {
+  const m = ev.data;
+  if (m.type !== 'preview' && m.type !== 'preview-fail') return;
+  pBusy = false;
+  if (pDirty) { sendPreview(); }
+  if (running || frames.length || meta) return;
+  if (m.type === 'preview') {
+    previewMs = m.data.ms; view.setPreview(m.data, pReq!);
+    $('st-v').textContent = String(m.data.vertices.length / 3); $('st-e').textContent = String(m.data.edges.length / 2); $('st-f').textContent = String(m.data.faces.length / 3);
+    $('warn').textContent = m.data.clamped ? 'Overlapping cone caps were shrunk' : '';
+  } else { view.clear(); $('warn').textContent = ''; }
+};
 
 /** A chunk of the solver cannot be interrupted, so Stop terminates the worker and starts a fresh one. */
 function killWorker() { worker.terminate(); worker = spawn(); worker.onmessage = onWorker; }
@@ -154,10 +188,21 @@ function setQuality(label: string, ok: boolean, detail?: string) {
 function fmt(x: number | undefined | null) { return x == null || !isFinite(x) ? '' : x === 0 ? '0' : Math.abs(x) < 1e-3 || Math.abs(x) >= 1e4 ? x.toExponential(1) : x.toPrecision(3); }
 
 // ---------- display + smooth playback ----------
+/** Port of frameData() in embed_flow.py: a smooth sub-frame blends rho, t, Kdef and Avert with the same fraction as its geometry. Cached per sub-frame. */
+type Sub = Fr & { _sh?: FlowFrame };
+function subFrame(fr: Fr, to: Fr): FlowFrame {
+  const sf = fr as Sub; if (sf._sh) return sf._sh;
+  const A = fr.fp!.from as Fr, s = fr.fp!.i / fr.fp!.n;
+  const mix = (a: number | undefined, b: number | undefined) => (a == null || b == null ? b : (1 - s) * a + s * b);
+  const mix1 = (a: Float32Array | undefined, b: Float32Array | undefined) => {
+    if (!a || !b || a.length !== b.length) return b; const o = new Float32Array(b.length); for (let i = 0; i < o.length; i++) o[i] = (1 - s) * a[i] + s * b[i]; return o;
+  };
+  return sf._sh = { ...to, vertices: flat(fr.V), rho: mix(A.rho, to.rho), t: mix(A.t, to.t)!, Kdef: mix1(A.Kdef, to.Kdef), Avert: mix1(A.Avert, to.Avert) };
+}
 function display(p: PFrame) {
   const fr = p as Fr, to = (fr.fp ? fr.fp.to : fr) as Fr;
   if (!meta) return;
-  const shown: FlowFrame = fr.fp ? { ...to, vertices: flat(fr.V) } : to;
+  const shown: FlowFrame = fr.fp ? subFrame(fr, to) : to;
   view.setFrame(shown, frames[0]);
   if (cfShown !== to) { cf.setFrame(to); cfShown = to; }
   $('st-l').textContent = to.lenRelRms == null ? '' : (100 * to.lenRelRms).toFixed(2) + ' %';
@@ -192,6 +237,14 @@ function finish(stopped: boolean) {
   setStatus(stopped ? `Stopped at frame ${cur + 1}.` : `Done: ${frames.length} frames, t = 0 .. ${frames[frames.length - 1].t.toPrecision(3)}.`);
   if (!stopped) $('loadpct').textContent = '100%';
   if (stopped) player.stop(true);
+  else if (player.busy()) { // let the smooth tail finish, but never rest mid-run
+    const last = frames.length; setTimeout(() => { if (frames.length === last && player.busy()) player.stop(true); showEnd(); }, 2500);
+  } else showEnd();
+}
+/** The Python page ends a run on the final frame. */
+function showEnd() {
+  const k = frames.length - 1; if (k < 0 || running || cur === k) return;
+  player.seek(frames[k]); cur = k; ($('play') as HTMLInputElement).value = String(k); showFrame();
 }
 
 ($('play') as HTMLInputElement).oninput = e => { const k = +(e.target as HTMLInputElement).value; player.seek(frames[k]); cur = k; showFrame(); };
@@ -199,18 +252,18 @@ $('playbtn').onclick = () => player.play();
 
 function clearStats() { for (const id of ['st-v', 'st-e', 'st-f', 'st-l', 'st-c']) $(id).textContent = ''; }
 /** Drop the shown flow and return to the cone preview. */
-function toPreview() {
+function toPreview(keepView = false) {
   player.stop(false);
   if (running) { runId++; killWorker(); running = false; }
   frames = []; meta = null; cur = 0; cfShown = null; result = null;
-  view.clear(); clearStats();
+  if (!keepView) { view.clear(); clearStats(); requestPreview(false); }
   $('loadpct').textContent = ''; $('qnote').textContent = ''; $('qnote').title = ''; $('tval').textContent = ''; $('playlbl').textContent = ''; $('notice').hidden = true; $('warn').textContent = '';
   ($('play') as HTMLInputElement).max = '0'; ($('play') as HTMLInputElement).value = '0';
   setStatus(''); lock(false);
 }
 
 function start() {
-  toPreview();
+  toPreview(true);
   const req: FlowRequest = { n: betas.length, betas: betas.slice(), positions: positions.map(p => [...p] as [number, number]), seed, level };
   cf.setMarkers(false);
   runId++; running = true; t0 = performance.now(); wallMs = 0; lock(false);
@@ -246,7 +299,24 @@ function setConfig(c: { positions?: number[][]; betas?: number[]; seed?: SeedSur
 (window as unknown as Record<string, unknown>).__flow = {
   frames: () => frames.length, running: () => running, setConfig, generate: start,
   seek: (k: number) => { player.seek(frames[Math.min(k, frames.length - 1)]); cur = Math.min(k, frames.length - 1); showFrame(); },
-  result: () => result, wallMs: () => wallMs, status: () => $('status').textContent, positions: () => positions, betas: () => betas,
+  result: () => result, previewMs: () => previewMs, previewReady: () => !pBusy && pTimer == null && !pDirty, dragCone: (i: number, p: [number, number], fin: boolean) => cf.onDragCone?.(i, p, fin),
+  /** test: max |delta faceT| between consecutive linear sub-frames of frames k..k+1, old (B's Kdef) vs blended */
+  faceTProbe: (k: number, n: number) => {
+    const A = frames[k], B = frames[k + 1]; view.setOverlay('length');
+    const run = (blend: boolean) => {
+      let prev: Float32Array | null = null, mx = 0;
+      for (let i = 1; i <= n; i++) {
+        const V = A.V.map((a, j) => a.map((x, c) => (1 - i / n) * x + (i / n) * B.V[j][c]));
+        const fr = { ...B, V, fp: { from: A, to: B, i, n } } as Fr;
+        const sh = blend ? subFrame(fr, B) : { ...B, vertices: flat(V) };
+        const r = view.curv.compute(sh, frames[0], meta!.coneIds); if (!r) continue;
+        if (prev) for (let q = 0; q < prev.length; q++) { const d = Math.abs(r.faceT[q] - prev[q]); if (d === d) mx = Math.max(mx, d); }
+        prev = Float32Array.from(r.faceT);
+      }
+      return mx;
+    };
+    return { before: run(false), after: run(true) };
+  }, wallMs: () => wallMs, status: () => $('status').textContent, positions: () => positions, betas: () => betas,
 };
 
 buildSliders(4); lock(false);

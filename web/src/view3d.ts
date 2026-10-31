@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { BLUES_LUT, shadeVal, pickLut, RAW_COLOR_SPACE } from './shading';
 import { CurvatureOverlay } from './curvature';
-import type { FlowFrame, FlowMeta } from './solver';
+import type { FlowFrame, FlowMeta, PreviewData } from './solver';
 
 export type Shading = 'reflective' | 'plain' | 'wireframe';
 export type Overlay = 'none' | 'length' | 'gauss';
@@ -62,7 +62,7 @@ export class View3D {
   }
 
   reset(meta: FlowMeta) {
-    this.meta = meta; this.frame = null; this.frame0 = null; this.fitted = false;
+    this.previewMode = false; this.keepOrbit = false; this.meta = meta; this.frame = null; this.frame0 = null; this.fitted = false;
     this.curv.rho = meta.rho; this.curv.resetRange();
     this.labels.textContent = '';
     this.coneEls = meta.coneIds.map((_, i) => {
@@ -73,9 +73,28 @@ export class View3D {
     this.controls.target.set(0, 0, 0); this.controls.update();
   }
 
+  /** Live seed preview (cap polyhedron): same framing, shading and cone markers as a flow frame. Keeps the user's orbit. */
+  setPreview(p: PreviewData, request: FlowMeta['request']) {
+    const first = !this.previewMode;
+    const nv = p.vertices.length / 3, z = new Float32Array(nv);
+    this.meta = { request, rho: p.rho, coneIds: p.coneIds, sphereVertices: p.vertices, sphereFaces: p.faces, edges: p.edges, nFrames: null };
+    this.curv.rho = p.rho;
+    if (first || this.coneEls.length !== p.coneIds.length) {
+      this.labels.textContent = '';
+      this.coneEls = p.coneIds.map((_, i) => { const d = document.createElement('div'); d.className = 'cone'; d.textContent = String(i + 1); this.labels.appendChild(d); return d; });
+    }
+    if (first) { this.curv.resetRange(); this.camera.position.set(0, 0, 10); this.camera.zoom = 1; this.controls.target.set(0, 0, 0); }
+    this.previewMode = true;
+    const f: FlowFrame = { t: 0, faces: p.faces, vertices: p.vertices, u: z, K: z, gbError: 0, quality: null, progress: 0 };
+    this.fitted = false; this.keepOrbit = !first;
+    this.setFrame(f, f);
+  }
+  private previewMode = false;
+  private keepOrbit = false;
+
   /** Back to the empty state (no flow shown). */
   clear() {
-    this.frame = null; this.frame0 = null; this.meta = null; this.fitted = false; this.labels.textContent = ''; this.coneEls = [];
+    this.previewMode = false; this.frame = null; this.frame0 = null; this.meta = null; this.fitted = false; this.labels.textContent = ''; this.coneEls = [];
     this.mesh.visible = false; this.wire.visible = false; this.wfLines.visible = false; this.onLegend?.();
     this.renderer.render(this.scene, this.camera);
   }
@@ -93,8 +112,9 @@ export class View3D {
       this.radius = med; this.fitted = true;
       const h = 0.5 / 0.38 * Math.min(Math.max(1, mr * 0.8), 2.6) * med; // seed tips (not in the fixtures) are nearer than the final cones
       this.camera.left = -h; this.camera.right = h; this.camera.top = h; this.camera.bottom = -h;
-      this.camera.position.set(0, 0, med * 12); this.camera.far = med * 40; this.camera.zoom = 1; this.camera.updateProjectionMatrix();
-      this.controls.target.set(0, 0, 0); this.controls.update();
+      this.camera.far = med * 40;
+      if (this.keepOrbit) { const d = this.camera.position.length() || 1; this.camera.position.multiplyScalar(med * 12 / d); this.camera.updateProjectionMatrix(); }
+      else { this.camera.position.set(0, 0, med * 12); this.camera.zoom = 1; this.camera.updateProjectionMatrix(); this.controls.target.set(0, 0, 0); this.controls.update(); }
     }
     this.render();
   }
