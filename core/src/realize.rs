@@ -603,6 +603,8 @@ pub struct Backward {
     out: Vec<Option<Realized>>,
     /// next frame index to realize (None = done)
     next: Option<usize>,
+    /// backward fit of frame `next` that folded, waiting for the forward chain (rb, later shape)
+    pending: Option<(Realized, Realized)>,
 }
 
 impl Backward {
@@ -623,7 +625,7 @@ impl Backward {
             }
         }
         out[n - 1] = Some(cur);
-        Backward { n, fwd, out, next: n.checked_sub(2) }
+        Backward { n, fwd, out, next: n.checked_sub(2), pending: None }
     }
 
     /// Frames realized so far.
@@ -631,40 +633,53 @@ impl Backward {
         self.out.iter().filter(|r| r.is_some()).count()
     }
 
-    /// Realize one more (earlier) frame; false when all are done.
+    /// One unit of work: a backward fit of the next earlier frame (with its hidden substeps), or
+    /// one fit of the lazily extended forward chain when that fit folded.  False when all are done.
     pub fn step(&mut self, rlz: &FastRealizer, src: &dyn FlowSource, frs: &[MetricFrame]) -> bool {
         let (step_rel, max_sub) = (0.08, 4usize);
         let Some(k) = self.next else { return false };
         let n = self.n;
-        let nf = &frs[k + 1];
-        let nx = self.out[k + 1].clone().unwrap();
-        let dl = frs[k].lengths.iter().zip(&nf.lengths).map(|(a, b)| (b / a).ln().abs()).fold(0.0, f64::max);
-        let nsub = ((dl / step_rel).ceil() as usize).min(max_sub).max(1) - 1;
-        let mut c = nx.clone();
-        for j in (1..=nsub).rev() {
-            let t = frs[k].t + (nf.t - frs[k].t) * j as f64 / (nsub + 1) as f64;
-            let rm = rlz.realize(&src.between(&frs[k], t), Some(&c));
-            if rm.ok {
-                c = rm;
+        if self.pending.is_none() {
+            let nf = &frs[k + 1];
+            let nx = self.out[k + 1].clone().unwrap();
+            let dl = frs[k].lengths.iter().zip(&nf.lengths).map(|(a, b)| (b / a).ln().abs()).fold(0.0, f64::max);
+            let nsub = ((dl / step_rel).ceil() as usize).min(max_sub).max(1) - 1;
+            let mut c = nx.clone();
+            for j in (1..=nsub).rev() {
+                let t = frs[k].t + (nf.t - frs[k].t) * j as f64 / (nsub + 1) as f64;
+                let rm = rlz.realize(&src.between(&frs[k], t), Some(&c));
+                if rm.ok {
+                    c = rm;
+                }
+            }
+            let rb = rlz.realize(&frs[k].lengths, Some(&c));
+            if rb.ok && deep(rlz, &rb) == 0 {
+                return self.commit(k, rb);
+            }
+            self.pending = Some((rb, nx));
+        }
+        // forward(k), one fit per call
+        let j = (0..n).filter(|&i| self.fwd[i].is_some()).max().unwrap();
+        if j < k {
+            let prev = self.fwd[j].as_ref().filter(|p| p.ok).cloned();
+            self.fwd[j + 1] = Some(rlz.realize(&frs[j + 1].lengths, prev.as_ref()));
+            if j + 1 < k {
+                return true;
             }
         }
-        let rb = rlz.realize(&frs[k].lengths, Some(&c));
-        let mut keep = rb.clone();
-        if !rb.ok || deep(rlz, &rb) > 0 {
-            // forward(k)
-            let mut j = (0..n).filter(|&i| self.fwd[i].is_some()).max().unwrap();
-            while j < k {
-                let prev = self.fwd[j].as_ref().filter(|p| p.ok).cloned();
-                self.fwd[j + 1] = Some(rlz.realize(&frs[j + 1].lengths, prev.as_ref()));
-                j += 1;
-            }
-            let rf = self.fwd[k].clone().unwrap();
-            if cleaner_picks_b(rlz, &rb, &rf) {
-                let mut r = rf;
-                r.x = geom::kabsch_align(&r.x, &nx.x);
-                keep = r;
-            }
-        }
+        let (rb, nx) = self.pending.take().unwrap();
+        let rf = self.fwd[k].clone().unwrap();
+        let keep = if cleaner_picks_b(rlz, &rb, &rf) {
+            let mut r = rf;
+            r.x = geom::kabsch_align(&r.x, &nx.x);
+            r
+        } else {
+            rb
+        };
+        self.commit(k, keep)
+    }
+
+    fn commit(&mut self, k: usize, keep: Realized) -> bool {
         self.out[k] = Some(keep);
         self.next = k.checked_sub(1);
         self.next.is_some()

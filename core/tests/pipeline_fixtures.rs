@@ -104,3 +104,17 @@ fn rho_neg_is_refused() {
     let e = Session::new(cfg).err().expect("rho<0 must be refused");
     assert!(e.contains("rho > 0"), "{e}");
 }
+
+#[test]
+fn overlapping_caps_and_bad_beta() {
+    // two close cones: caps get clamped, the session still runs to a quality label
+    let cfg = SessionConfig { positions: vec![[0.1, 0.0], [0.25, 0.0], [-0.8, 0.5]], betas: vec![0.5, 0.6, 0.7], seed: Seed::Smart, level: page_level("smoke").unwrap() };
+    let mut s = Session::new(cfg).unwrap();
+    assert!(!s.flow_mesh.seed.overlaps.is_empty());
+    let rows = s.run_all().unwrap();
+    assert_eq!(rows.len(), 21);
+    assert!(rows.iter().all(|r| r.gb_resid.abs() < 1e-12));
+    eprintln!("overlap config: quality {:?}", s.quality.as_ref().unwrap().label);
+    let bad = SessionConfig { positions: vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]], betas: vec![1.2, 0.6, 0.7], seed: Seed::Smart, level: page_level("smoke").unwrap() };
+    assert!(Session::new(bad).is_err());
+}
