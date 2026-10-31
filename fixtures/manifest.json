@@ -1,0 +1,201 @@
+{
+ "resolution": "smoke",
+ "configs": [
+  {
+   "name": "n3_pos_gluing",
+   "desc": "3 cones, rho>0, one beta<0.5, Cone Gluing",
+   "betas": [
+    0.45,
+    0.6,
+    0.65
+   ],
+   "seed_surface": "gluing",
+   "n_frames": 21,
+   "rho": 0.3613043551590875,
+   "quality_label": "Certified Ricci Flow",
+   "gb_resid_max_abs": 4.618527782440651e-14,
+   "gb_resid_recomputed_max_abs": 4.618527782440651e-14,
+   "runtime_s": 6.8245005999924615,
+   "files": {
+    "arrays.npz": {
+     "bytes": 1153693,
+     "sha256": "84fc7f6d3729bdf8ffacfd3a26940c522410391f4c1d5d96f8c95632f0891c5b"
+    },
+    "fixture.json": {
+     "bytes": 13279,
+     "sha256": "5da3a9eed4cdf3e6e83e1c19ef7b2368da07f24bf30cc2a084e7f900fe304a54"
+    }
+   }
+  },
+  {
+   "name": "n4_pos_gluing",
+   "desc": "4 cones, rho>0, Cone Gluing",
+   "betas": [
+    0.6,
+    0.7,
+    0.5,
+    0.8
+   ],
+   "seed_surface": "gluing",
+   "n_frames": 21,
+   "rho": 0.309022138644274,
+   "quality_label": "Certified Ricci Flow",
+   "gb_resid_max_abs": 6.394884621840902e-14,
+   "gb_resid_recomputed_max_abs": 6.394884621840902e-14,
+   "runtime_s": 8.356266999995569,
+   "files": {
+    "arrays.npz": {
+     "bytes": 1259502,
+     "sha256": "2192c7729c3a4eaf8c5faf27e1785f833015ace4d818d0c006ba0a0a27d46255"
+    },
+    "fixture.json": {
+     "bytes": 13363,
+     "sha256": "cede3a8ddfdb7848326e821a07d6e3f8ecdbfd2fbb54352f5eb515b7f5ddce6a"
+    }
+   }
+  },
+  {
+   "name": "n5_pos_gluing",
+   "desc": "5 cones, rho>0, one beta<0.5, Cone Gluing",
+   "betas": [
+    0.45,
+    0.7,
+    0.8,
+    0.9,
+    0.7
+   ],
+   "seed_surface": "gluing",
+   "n_frames": 21,
+   "rho": 0.2874595136695288,
+   "quality_label": "Certified Target",
+   "gb_resid_max_abs": 8.526512829121202e-14,
+   "gb_resid_recomputed_max_abs": 8.526512829121202e-14,
+   "runtime_s": 15.750364200008335,
+   "files": {
+    "arrays.npz": {
+     "bytes": 1289165,
+     "sha256": "431bdb0cf5d58caca8246868b6cb6ce5d53a68c5fff7fbe6f1573f932938733a"
+    },
+    "fixture.json": {
+     "bytes": 13419,
+     "sha256": "b595aa6788a907c4c21c5870a79b3a2fd024e3b4e9e15dcb4b01cbf8abd4be8b"
+    }
+   }
+  },
+  {
+   "name": "n4_pos_polytope",
+   "desc": "4 cones, rho>0, Polytope seed",
+   "betas": [
+    0.6,
+    0.75,
+    0.55,
+    0.85
+   ],
+   "seed_surface": "polytope",
+   "n_frames": 21,
+   "rho": 0.3843016730270829,
+   "quality_label": "Certified Ricci Flow",
+   "gb_resid_max_abs": 6.394884621840902e-14,
+   "gb_resid_recomputed_max_abs": 6.394884621840902e-14,
+   "runtime_s": 14.896233400009805,
+   "files": {
+    "arrays.npz": {
+     "bytes": 1280893,
+     "sha256": "2e392bb6e054b049d75c2b4703e0f2153f3643070520240d04d87ccc164f092b"
+    },
+    "fixture.json": {
+     "bytes": 13403,
+     "sha256": "99fd9f74a341098efb97b77b55c068d081f4b201c2580d6dc499516996f560b4"
+    }
+   }
+  },
+  {
+   "name": "n4_pos_smart",
+   "desc": "4 cones, rho>0, Smart Seed",
+   "betas": [
+    0.5,
+    0.65,
+    0.8,
+    0.7
+   ],
+   "seed_surface": "smart",
+   "n_frames": 21,
+   "rho": 0.33644599635331474,
+   "quality_label": "Certified Ricci Flow",
+   "gb_resid_max_abs": 6.750155989720952e-14,
+   "gb_resid_recomputed_max_abs": 6.750155989720952e-14,
+   "runtime_s": 9.865203399996972,
+   "files": {
+    "arrays.npz": {
+     "bytes": 1214548,
+     "sha256": "fea8be99f3ce8fe342788afdf0ceaa1f6003adbe81e53bf1fc40ade8a74b00ad"
+    },
+    "fixture.json": {
+     "bytes": 13336,
+     "sha256": "e6faece0c41d4313ff5220e5d4bfc6429330018bbf35473cc191b2c881eb52f2"
+    }
+   }
+  },
+  {
+   "name": "n4_neg_gluing",
+   "desc": "4 cones, rho<0 (stage 2: intrinsic flow + 3D tracking)",
+   "betas": [
+    0.3,
+    0.4,
+    0.5,
+    0.4
+   ],
+   "seed_surface": "gluing",
+   "n_frames": 21,
+   "rho": -0.2129940532289188,
+   "quality_label": "Best Attempt (crumpled, can't reach intrinsic metric)",
+   "gb_resid_max_abs": 6.750155989720952e-14,
+   "gb_resid_recomputed_max_abs": 6.750155989720952e-14,
+   "runtime_s": 14.591882200009422,
+   "files": {
+    "arrays.npz": {
+     "bytes": 1052535,
+     "sha256": "22cc74780e3aeb139696e3ee7dfe789695df65fc6bbebf1fd753a3b7c17ccbf5"
+    },
+    "fixture.json": {
+     "bytes": 14541,
+     "sha256": "bc388b03f1b433b5afc3e6a9948068274337c00bc00edb8c1769569b3ff53b1a"
+    }
+   }
+  }
+ ],
+ "determinism": {
+  "n3_pos_gluing": {
+   "identical": true,
+   "differing_arrays": {},
+   "quality_equal": true
+  },
+  "n4_pos_gluing": {
+   "identical": true,
+   "differing_arrays": {},
+   "quality_equal": true
+  },
+  "n5_pos_gluing": {
+   "identical": true,
+   "differing_arrays": {},
+   "quality_equal": true
+  },
+  "n4_pos_polytope": {
+   "identical": true,
+   "differing_arrays": {},
+   "quality_equal": true
+  },
+  "n4_pos_smart": {
+   "identical": true,
+   "differing_arrays": {},
+   "quality_equal": true
+  },
+  "n4_neg_gluing": {
+   "identical": true,
+   "differing_arrays": {},
+   "quality_equal": true
+  }
+ },
+ "total_runtime_s": 70.40008829999715,
+ "all_deterministic": true
+}
