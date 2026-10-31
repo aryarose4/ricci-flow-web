@@ -2,6 +2,10 @@
 //! lm (Levenberg-Marquardt), alexandrov (convex realization).
 use wasm_bindgen::prelude::*;
 
+pub mod flow;
+pub mod mesh;
+pub mod sparse;
+
 #[wasm_bindgen]
 pub fn version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
