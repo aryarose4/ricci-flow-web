@@ -1,0 +1,8 @@
+//! Ricci flow core (Rust -> WASM). Stage 1 modules land here: mesh, flow (BDF),
+//! lm (Levenberg-Marquardt), alexandrov (convex realization).
+use wasm_bindgen::prelude::*;
+
+#[wasm_bindgen]
+pub fn version() -> String {
+    env!("CARGO_PKG_VERSION").to_string()
+}
