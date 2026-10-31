@@ -142,7 +142,7 @@ fn run_fixture(name: &str) -> bool {
     let (x0, kind) = realize::fast_seed(&y, &faces, &cones, &betas);
     let rlz = realize::FastRealizer::new(mesh.clone(), x0, kind);
     let src = FixtureFlow { t: ts.clone(), u: uf.clone(), l0: z["L0"].f.clone(), edges: edges.clone() };
-    let start = realize::clean_start(&rlz, &src, &lf[0], &lf[nf - 1], 6);
+    let start = realize::clean_start(&rlz, &src, &lf[0], 6);
     let frs: Vec<MetricFrame> = (0..nf).map(|k| MetricFrame { k, t: ts[k], lengths: lf[k].clone() }).collect();
     let res = realize::realize_backward(&rlz, &src, &frs, start, &mut |_, _| {});
     let mut rows: Vec<FrameRow> = res
@@ -181,7 +181,7 @@ fn run_fixture(name: &str) -> bool {
         let f_max = rf.iter().cloned().fold(0.0, f64::max);
         let al = geom::kabsch_align(&xs[k], &xf[k]);
         let krms = (al.iter().zip(&xf[k]).map(|(a, b)| geom::dot(geom::sub(*a, *b), geom::sub(*a, *b))).sum::<f64>() / nv as f64).sqrt();
-        let len_ok = r_rms <= (1.1 * f_rms).max(f_rms + 1e-3);
+        let len_ok = (r_rms - f_rms).abs() <= 0.10 * f_rms; // relative 10 %, no absolute slack
         let fold_ok = rows[k].n_deep == nd_fix[k];
         ok &= len_ok && fold_ok;
         eprintln!(

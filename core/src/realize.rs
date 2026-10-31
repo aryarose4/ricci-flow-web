@@ -43,9 +43,9 @@ pub mod geom {
         dot(a, a).sqrt()
     }
 
-    /// `embed4._signed_volume`.
+    /// `embed4._signed_volume` (delegates to [`crate::mesh::signed_volume`]).
     pub fn signed_volume(x: &[V3], f: &[[usize; 3]]) -> f64 {
-        f.iter().map(|t| dot(x[t[0]], cross(x[t[1]], x[t[2]]))).sum::<f64>() / 6.0
+        crate::mesh::signed_volume(x, f)
     }
 
     /// |  |X_a - X_b| / L - 1 | per edge.
@@ -53,16 +53,9 @@ pub mod geom {
         e.iter().zip(l).map(|(e, &l)| (norm(sub(x[e[0]], x[e[1]])) / l - 1.0).abs()).collect()
     }
 
-    /// `thick_part.edges_of`: sorted unique (a < b) edges.
+    /// `thick_part.edges_of` (delegates to [`crate::mesh::edges_of`]).
     pub fn edges_of(f: &[[usize; 3]]) -> Vec<[usize; 2]> {
-        let mut e: Vec<[usize; 2]> = f
-            .iter()
-            .flat_map(|t| [[t[0], t[1]], [t[1], t[2]], [t[2], t[0]]])
-            .map(|[a, b]| if a < b { [a, b] } else { [b, a] })
-            .collect();
-        e.sort_unstable();
-        e.dedup();
-        e
+        crate::mesh::edges_of(f)
     }
 
     /// `embed4.face_edge_table`: interior edges (a < b) with their two faces.
@@ -541,15 +534,17 @@ fn convex_anchor(rlz: &FastRealizer, src: &dyn FlowSource, l: &[f64]) -> Option<
 }
 
 /// `true_flow.clean_start(solver, realizer)`: a t = 0 shape connected to the uniformized end.
-/// `f0` = lengths of u(0), `ft` = lengths of u(T); `src.blend(s)` = lengths of s u(0) + (1-s) u(T).
-pub fn clean_start(rlz: &FastRealizer, src: &dyn FlowSource, f0: &[f64], ft: &[f64], nstep: usize) -> Option<Realized> {
+/// `f0` = lengths of u(0); `src.blend(s)` = lengths of s u(0) + (1-s) u(T) (u(T) = `blend(0)`,
+/// only requested when the cold fit of `f0` folds).
+pub fn clean_start(rlz: &FastRealizer, src: &dyn FlowSource, f0: &[f64], nstep: usize) -> Option<Realized> {
     let cold = rlz.realize(f0, None);
     if cold.ok && deep(rlz, &cold) == 0 {
         return Some(cold);
     }
-    let mut cur = rlz.realize(ft, None);
+    let ft = src.blend(0.0);
+    let mut cur = rlz.realize(&ft, None);
     if !cur.ok || deep(rlz, &cur) > 0 {
-        if let Some(ca) = convex_anchor(rlz, src, ft) {
+        if let Some(ca) = convex_anchor(rlz, src, &ft) {
             cur = ca;
         }
     }
@@ -593,27 +588,56 @@ pub fn realize_backward(
     start: Option<Realized>,
     progress: &mut dyn FnMut(usize, usize),
 ) -> Vec<Realized> {
-    let (step_rel, max_sub) = (0.08, 4usize);
-    let n = frs.len();
-    let mut fwd: Vec<Option<Realized>> = vec![None; n];
-    fwd[0] = Some(match start {
-        Some(s) => s,
-        None => rlz.realize(&frs[0].lengths, None),
-    });
-    let mut out: Vec<Option<Realized>> = vec![None; n];
-    let mut cur = rlz.realize(&frs[n - 1].lengths, None);
-    if !cur.ok || deep(rlz, &cur) > 0 {
-        if let Some(ca) = convex_anchor(rlz, src, &frs[n - 1].lengths) {
-            if cleaner_picks_b(rlz, &cur, &ca) {
-                cur = ca;
+    let mut bw = Backward::new(rlz, src, frs, start);
+    progress(bw.done(), frs.len());
+    while bw.step(rlz, src, frs) {
+        progress(bw.done(), frs.len());
+    }
+    bw.finish()
+}
+
+/// Steppable [`realize_backward`]: `new` fits the last frame, each `step` one earlier frame.
+pub struct Backward {
+    n: usize,
+    fwd: Vec<Option<Realized>>,
+    out: Vec<Option<Realized>>,
+    /// next frame index to realize (None = done)
+    next: Option<usize>,
+}
+
+impl Backward {
+    pub fn new(rlz: &FastRealizer, src: &dyn FlowSource, frs: &[MetricFrame], start: Option<Realized>) -> Backward {
+        let n = frs.len();
+        let mut fwd: Vec<Option<Realized>> = vec![None; n];
+        fwd[0] = Some(match start {
+            Some(s) => s,
+            None => rlz.realize(&frs[0].lengths, None),
+        });
+        let mut out: Vec<Option<Realized>> = vec![None; n];
+        let mut cur = rlz.realize(&frs[n - 1].lengths, None);
+        if !cur.ok || deep(rlz, &cur) > 0 {
+            if let Some(ca) = convex_anchor(rlz, src, &frs[n - 1].lengths) {
+                if cleaner_picks_b(rlz, &cur, &ca) {
+                    cur = ca;
+                }
             }
         }
+        out[n - 1] = Some(cur);
+        Backward { n, fwd, out, next: n.checked_sub(2) }
     }
-    out[n - 1] = Some(cur);
-    progress(1, n);
-    for k in (0..n.saturating_sub(1)).rev() {
+
+    /// Frames realized so far.
+    pub fn done(&self) -> usize {
+        self.out.iter().filter(|r| r.is_some()).count()
+    }
+
+    /// Realize one more (earlier) frame; false when all are done.
+    pub fn step(&mut self, rlz: &FastRealizer, src: &dyn FlowSource, frs: &[MetricFrame]) -> bool {
+        let (step_rel, max_sub) = (0.08, 4usize);
+        let Some(k) = self.next else { return false };
+        let n = self.n;
         let nf = &frs[k + 1];
-        let nx = out[k + 1].clone().unwrap();
+        let nx = self.out[k + 1].clone().unwrap();
         let dl = frs[k].lengths.iter().zip(&nf.lengths).map(|(a, b)| (b / a).ln().abs()).fold(0.0, f64::max);
         let nsub = ((dl / step_rel).ceil() as usize).min(max_sub).max(1) - 1;
         let mut c = nx.clone();
@@ -628,23 +652,27 @@ pub fn realize_backward(
         let mut keep = rb.clone();
         if !rb.ok || deep(rlz, &rb) > 0 {
             // forward(k)
-            let mut j = (0..n).filter(|&i| fwd[i].is_some()).max().unwrap();
+            let mut j = (0..n).filter(|&i| self.fwd[i].is_some()).max().unwrap();
             while j < k {
-                let prev = fwd[j].as_ref().filter(|p| p.ok).cloned();
-                fwd[j + 1] = Some(rlz.realize(&frs[j + 1].lengths, prev.as_ref()));
+                let prev = self.fwd[j].as_ref().filter(|p| p.ok).cloned();
+                self.fwd[j + 1] = Some(rlz.realize(&frs[j + 1].lengths, prev.as_ref()));
                 j += 1;
             }
-            let rf = fwd[k].clone().unwrap();
+            let rf = self.fwd[k].clone().unwrap();
             if cleaner_picks_b(rlz, &rb, &rf) {
                 let mut r = rf;
                 r.x = geom::kabsch_align(&r.x, &nx.x);
                 keep = r;
             }
         }
-        out[k] = Some(keep);
-        progress(n - k, n);
+        self.out[k] = Some(keep);
+        self.next = k.checked_sub(1);
+        self.next.is_some()
     }
-    out.into_iter().map(|r| r.unwrap()).collect()
+
+    pub fn finish(self) -> Vec<Realized> {
+        self.out.into_iter().map(|r| r.unwrap()).collect()
+    }
 }
 
 // ------------------------------------------------------------------ polytope

@@ -16,3 +16,5 @@ pub mod lm;
 pub mod quality;
 pub mod realize;
 pub mod seedmesh;
+pub mod cfgrid;
+pub mod pipeline;
