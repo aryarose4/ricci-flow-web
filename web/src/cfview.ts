@@ -9,6 +9,7 @@ import type { FlowFrame, FlowMeta, WGrid } from './solver';
 
 type V3 = [number, number, number];
 interface Hem { verts: V3[][]; NI: number; NJ: number }
+interface Mk { i: number; u: number; ph: number; v: number }
 
 const unitOf = (p: number[]): V3 => { const d = 1 + p[0] * p[0] + p[1] * p[1]; return [2 * p[0] / d, 2 * p[1] / d, (p[0] * p[0] + p[1] * p[1] - 1) / d]; };
 const dirOf = (th: number, ln: number): V3 => [Math.sin(th) * Math.cos(ln), Math.sin(th) * Math.sin(ln), Math.cos(th)];
@@ -41,29 +42,77 @@ export class CfDiscs {
   private dark = false;
   // view state (shared by both plots, same defaults and gestures as the Python page)
   private yaw = 0.6; private elev = 1.1; private zoom = 1;
+  // draggable cone markers (shown while no flow is displayed, like the Python page's live preview)
+  private mk: Mk[][] = [[], []]; private mkEls: HTMLDivElement[][] = [[], []];
+  markersOn = false;
+  setMarkers(on: boolean) { this.markersOn = on; this.draw(); }
+  /** Called while a marker is dragged (fin = false) and on release (fin = true), with the new stereographic position. */
+  onDragCone: ((i: number, pos: [number, number], fin: boolean) => void) | null = null;
 
   constructor(private canvases: HTMLCanvasElement[]) {
     this.renderers = canvases.map(c => {
       const r = new THREE.WebGLRenderer({ canvas: c, antialias: true, preserveDrawingBuffer: true });
       r.outputColorSpace = RAW_COLOR_SPACE; return r;
     });
-    canvases.forEach(c => {
+    canvases.forEach((c, k) => {
       new ResizeObserver(() => this.resize()).observe(c.parentElement!);
       let drag: { x: number; y: number } | null = null;
       c.style.cursor = 'grab'; c.style.touchAction = 'none';
-      c.addEventListener('pointerdown', e => { drag = { x: e.clientX, y: e.clientY }; c.style.cursor = 'grabbing'; c.setPointerCapture(e.pointerId); });
+      let cone = -1;
+      const pix = (e: PointerEvent) => { const r = c.getBoundingClientRect(); return [(e.clientX - r.left), (e.clientY - r.top)]; };
+      const hit = (e: PointerEvent) => {
+        if (!this.markersOn) return -1;
+        const [px, py] = pix(e); let best = -1, bd = 18;
+        for (const m of this.mk[k]) { const q = this.screenOf(m, k); const d = Math.hypot(q[0] - px, q[1] - py); if (d < bd) { bd = d; best = m.i; } }
+        return best;
+      };
+      c.addEventListener('pointerdown', e => { cone = e.button === 0 ? hit(e) : -1; drag = { x: e.clientX, y: e.clientY }; c.style.cursor = 'grabbing'; c.setPointerCapture(e.pointerId); });
       c.addEventListener('pointermove', e => {
-        if (!drag) return;
+        if (!drag) { c.style.cursor = hit(e) >= 0 ? 'pointer' : 'grab'; return; }
+        if (cone >= 0) { // drag the marker: inverse of the plot projection at the marker's own height
+          const m = this.mk[k].find(z => z.i === cone); if (!m || !this.range) return;
+          const [px, py] = pix(e), q0 = this.screenOf(m, k), s = c.clientWidth, h = 1.25 / this.zoom;
+          const se = Math.max(0.3, Math.sin(this.elev)), cy = Math.cos(this.yaw), sy = Math.sin(this.yaw);
+          const dx = (px - q0[0]) / s * 2 * h, dy = -(py - q0[1]) / s * 2 * h;
+          const x1 = m.u * Math.cos(m.ph) * cy - m.u * Math.sin(m.ph) * sy + dx, y1 = m.u * Math.cos(m.ph) * sy + m.u * Math.sin(m.ph) * cy + dy / se;
+          let qx = x1 * cy + y1 * sy, qy = -x1 * sy + y1 * cy; const u = Math.hypot(qx, qy);
+          if (u > 0.995) { qx *= 0.995 / u; qy *= 0.995 / u; }
+          if (u < 1e-4) { qx = 1e-4; qy = 0; }
+          this.onDragCone?.(cone, this.diskToPlane(qx, qy, k), false); return;
+        }
         this.yaw += (e.clientX - drag.x) * 0.012;
         this.elev = Math.max(0.1, Math.min(1.5, this.elev + (e.clientY - drag.y) * 0.008));
         drag = { x: e.clientX, y: e.clientY }; this.draw();
       });
-      const up = () => { drag = null; c.style.cursor = 'grab'; };
+      const up = () => { const was = cone; drag = null; cone = -1; c.style.cursor = 'grab'; if (was >= 0) this.onDragCone?.(was, this.positions[was] as [number, number], true); };
       c.addEventListener('pointerup', up); c.addEventListener('pointercancel', up);
       c.addEventListener('wheel', e => { e.preventDefault(); this.zoom = Math.max(0.25, Math.min(12, this.zoom * Math.exp(-e.deltaY * 0.0015))); this.draw(); }, { passive: false });
       c.addEventListener('dblclick', () => { this.zoom = 1; this.draw(); });
     });
+    canvases.forEach((c, k) => {
+      for (let i = 0; i < 5; i++) { const d = document.createElement('div'); d.className = 'cone'; d.hidden = true; d.style.pointerEvents = 'none'; c.parentElement!.appendChild(d); this.mkEls[k].push(d); }
+    });
     this.resize();
+  }
+
+  private diskToPlane(qx: number, qy: number, k: number): [number, number] {
+    const a = 2 * Math.atan(Math.hypot(qx, qy)), ph = Math.atan2(qy, qx), th = k ? Math.PI - a : a, ln = k ? Math.PI - ph : ph - Math.PI;
+    const d = dirOf(th, ln); return [d[0] / (1 - d[2]), d[1] / (1 - d[2])];
+  }
+
+  private screenOf(m: Mk, k: number): [number, number] {
+    const range = this.range!, lo = range[0], span = (range[1] - range[0]) || 1, s = this.canvases[k].clientWidth, h = 1.25 / this.zoom;
+    const cy = Math.cos(this.yaw), sy = Math.sin(this.yaw), ce = Math.cos(this.elev), se = Math.sin(this.elev);
+    const px = m.u * Math.cos(m.ph), py = m.u * Math.sin(m.ph), v = (m.v - lo) / span - 0.5, x1 = px * cy - py * sy, y1 = px * sy + py * cy;
+    return [(x1 / h + 1) / 2 * s, (1 - (v * 0.8 * ce + y1 * se) / h) / 2 * s];
+  }
+
+  /** Live preview before any flow: the analytic cone-model height graph for the given cones. */
+  setPreview(betas: number[], positions: number[][]) {
+    this.betas = betas.slice(); this.positions = positions.map(p => [...p]);
+    const ny = 64, nx = 128;
+    this.range = null; this.grid = null; this.hems = this.build({ nx, ny, values: new Float32Array(nx * ny), extent: [-Math.PI, Math.PI, 0, Math.PI] });
+    this.draw();
   }
 
   resize() {
@@ -80,7 +129,7 @@ export class CfDiscs {
 
   reset(meta: FlowMeta) {
     this.betas = meta.request.betas.slice(); this.positions = meta.request.positions.map(p => [...p]);
-    this.range = null; this.grid = null; this.hems = null;
+    this.range = null; this.grid = null; this.hems = null; this.markersOn = false;
     this.draw();
   }
 
@@ -105,6 +154,7 @@ export class CfDiscs {
       const y0 = Math.floor(py), ty = py - y0, y1 = Math.min(H - 1, y0 + 1), x0 = Math.floor(px), tx = px - x0, xa = ((x0 % W) + W) % W, xb = (xa + 1) % W;
       return (R[y0 * W + xa] * (1 - tx) + R[y0 * W + xb] * tx) * (1 - ty) + (R[y1 * W + xa] * (1 - tx) + R[y1 * W + xb] * tx) * ty;
     };
+    this.mk = [[], []];
     const offs = [0, 0.0025, 0.007, 0.016, 0.035, 0.07], hem: Hem[] = [];
     let mn = Infinity, mx = -Infinity;
     for (let k = 0; k < 2; k++) { // 0: north, 1: south (viewed from the south pole)
@@ -125,6 +175,12 @@ export class CfDiscs {
         verts.push(row);
       }
       hem.push({ verts, NI, NJ });
+      U.forEach((u, i) => {
+        const ti = Math.acos(Math.max(-1, Math.min(1, u[2]))), li = Math.atan2(u[1], u[0]), a = k ? Math.PI - ti : ti;
+        if (a > HP) return;
+        const ph = k ? Math.PI - li : li + Math.PI;
+        this.mk[k].push({ i, u: Math.tan(a / 2), ph, v: samp(ti, li) + cmodel(dirOf(ti, li), U, B, flR) });
+      });
     }
     this.range = this.range ? [Math.min(this.range[0], mn), Math.max(this.range[1], mx)] : [mn, mx];
     return hem;
@@ -139,6 +195,12 @@ export class CfDiscs {
       const old = this.meshes[k]; if (old) { this.scenes[k].remove(old); old.geometry.dispose(); this.meshes[k] = null; }
       if (this.hems && this.range) { const m = this.mesh(this.hems[k], this.range); this.meshes[k] = m; this.scenes[k].add(m); }
       r.render(this.scenes[k], this.cam);
+      this.mkEls[k].forEach((el, i) => {
+        const m = this.markersOn && this.range ? this.mk[k].find(z => z.i === i) : undefined;
+        el.hidden = !m; if (!m) return;
+        el.textContent = String(i + 1);
+        const q = this.screenOf(m, k); el.style.transform = `translate(${q[0]}px, ${q[1]}px) translate(-50%,-50%)`;
+      });
     }
   }
 

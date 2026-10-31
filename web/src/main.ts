@@ -3,10 +3,17 @@ import { View3D, type Overlay, type Shading } from './view3d';
 import { CfDiscs } from './cfview';
 import { PICNIC_CSS } from './shading';
 import { SENSITIVITY, SENSITIVITY_DEFAULT } from './curvature';
+import { Player, type PFrame } from './playback';
 import type { FlowFrame, FlowMeta, FlowRequest, FromWorker, SeedSurface, ToWorker } from './solver';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
+const params = new URLSearchParams(location.search);
+const fixturesMode = params.get('fixtures') === '1'; // testing only: stream golden fixtures instead of solving live
 const fixturesBase = new URL('fixtures/', document.baseURI).href;
+
+type Level = 'coarse' | 'medium' | 'fine' | 'extra';
+/** A true frame as displayed: the solver data plus its vertex triples for the smooth-playback player. */
+type Fr = FlowFrame & PFrame;
 
 // ---------- theme ----------
 let dark = true; // the Python page defaults to dark; the choice is remembered under the same key
@@ -26,21 +33,26 @@ function applyTheme() {
 $('theme').onclick = () => { dark = !dark; applyTheme(); };
 
 // ---------- radio lists ----------
-function radios(host: HTMLElement, name: string, opts: [string, string][], init: string, onChange: (v: string) => void) {
+type Opt = [value: string, text: string, disabledTip?: string];
+function radios(host: HTMLElement, name: string, opts: Opt[], init: string, onChange: (v: string) => void) {
   host.textContent = '';
-  for (const [v, text] of opts) {
+  for (const [v, text, off] of opts) {
     const l = document.createElement('label'), r = document.createElement('input'), s = document.createElement('span');
     r.type = 'radio'; r.name = name; r.value = v; r.checked = v === init; s.textContent = text;
+    if (off) { r.disabled = true; l.title = off; l.style.cursor = 'not-allowed'; l.style.opacity = '.55'; }
     r.onchange = () => { if (r.checked) onChange(v); };
     l.append(r, s); host.appendChild(l);
   }
   return (v: string) => { host.querySelectorAll('input').forEach(i => { i.checked = i.value === v; }); };
 }
-let seed: SeedSurface = 'gluing';
+let seed: SeedSurface = 'gluing', level: Level = 'coarse', smoothOn = true;
 const setSeedUI = radios($('seed'), 'seed', [['gluing', 'Cone Gluing'], ['smart', 'Smart Seed'], ['polytope', 'Polytope']], seed, v => { seed = v as SeedSurface; });
+radios($('realizer'), 'realizer', [['true_flow', 'True Ricci Flow'], ['fast', 'Fast Uniformizer', 'not yet ported']], 'true_flow', () => { /* only True Ricci Flow is available */ });
+const setLevelUI = radios($('ressel'), 'ressel', [['coarse', 'Coarse'], ['medium', 'Medium'], ['fine', 'Fine'], ['extra', 'Extra Fine']], level, v => { level = v as Level; });
+const setSmoothUI = radios($('fpsmooth'), 'fpsmooth', [['off', 'Off'], ['on', 'On']], 'on', v => { smoothOn = v === 'on'; });
 radios($('shade'), 'shade', [['reflective', 'Reflective'], ['plain', 'Plain'], ['wireframe', 'Wireframe']], 'reflective', v => { view.shading = v as Shading; view.render(); });
 radios($('overlay'), 'overlay', [['none', 'None'], ['length', 'Length Fit'], ['gauss', 'Gaussian Curvature']], 'none', v => { $('sens').hidden = v === 'none'; view.setOverlay(v as Overlay); updateLegend(); });
-radios($('curvscale'), 'curvscale', SENSITIVITY.map(([v, n]) => [v, n] as [string, string]), SENSITIVITY_DEFAULT, v => view.setSensitivity(parseFloat(v)));
+radios($('curvscale'), 'curvscale', SENSITIVITY.map(([v, n]) => [v, n] as Opt), SENSITIVITY_DEFAULT, v => view.setSensitivity(parseFloat(v)));
 
 function updateLegend() {
   const lg = $('legend'), on = view.overlay !== 'none';
@@ -63,147 +75,179 @@ function updateRho() {
   $('rhoval').textContent = (r >= 0 ? '+' : '−') + Math.abs(r).toFixed(3);
   $('rhonote').textContent = r > 0 ? '(sphere-like)' : r < 0 ? '(hyperbolic-like)' : '(flat)';
 }
+/** Any edit of the cones cancels a running flow and returns to the live preview (as on the Python page). */
+function configChanged() {
+  if (running || frames.length || meta) toPreview();
+  updateRho(); cf.setPreview(betas, positions); cf.setMarkers(true);
+}
+let sliderEls: { sl: HTMLInputElement; lab: HTMLLabelElement }[] = [];
 function buildSliders(n: number) {
-  const host = $('sliders'); host.textContent = '';
+  const host = $('sliders'); host.textContent = ''; sliderEls = [];
   betas = Array.from({ length: n }, (_, i) => betas[i] ?? defaultBetas[i % 5]);
   positions = ngon(n);
   for (let i = 0; i < n; i++) {
     const row = document.createElement('div'); row.className = 'row';
-    const lab = document.createElement('label'); lab.textContent = `β${i + 1} = ${betas[i].toFixed(2)}`;
+    const lab = document.createElement('label'); lab.textContent = `β = ${betas[i].toFixed(3)}`;
     const sl = document.createElement('input'); sl.type = 'range'; sl.min = '0.05'; sl.max = '0.95'; sl.step = '0.01'; sl.value = String(betas[i]);
-    sl.oninput = () => { betas[i] = +sl.value; lab.textContent = `β${i + 1} = ${betas[i].toFixed(2)}`; updateRho(); };
-    const px = document.createElement('input'), py = document.createElement('input');
-    for (const [el, k] of [[px, 0], [py, 1]] as const) {
-      el.type = 'number'; el.step = '0.05'; el.value = positions[i][k].toFixed(2); el.title = k ? 'y position (stereographic plane)' : 'x position (stereographic plane)';
-      el.onchange = () => { positions[i][k] = +el.value; };
-    }
-    row.append(lab, sl, px, py); host.appendChild(row);
+    sl.oninput = () => { betas[i] = +sl.value; lab.textContent = `β = ${betas[i].toFixed(3)}`; configChanged(); };
+    row.append(lab, sl); host.appendChild(row); sliderEls.push({ sl, lab });
   }
-  updateRho();
+  configChanged();
 }
 $('nsel').onchange = () => { betas = []; buildSliders(+($('nsel') as HTMLSelectElement).value); };
-
-// ---------- fixture list ----------
-interface Idx { name: string; n: number; betas: number[]; seed: SeedSurface; rho: number; quality: string }
-let fixtures: Idx[] = [];
-const fixSel = $('fixture') as HTMLSelectElement;
-async function loadIndex() {
-  fixtures = await (await fetch(fixturesBase + 'index.json')).json();
-  fixSel.textContent = '';
-  const auto = new Option('Nearest match', ''); fixSel.add(auto);
-  for (const f of fixtures) fixSel.add(new Option(`${f.name}  (${f.quality.split(' (')[0]})`, f.name));
-}
-fixSel.onchange = () => {
-  const f = fixtures.find(x => x.name === fixSel.value); if (!f) return;
-  ($('nsel') as HTMLSelectElement).value = String(f.n);
-  betas = f.betas.slice(); seed = f.seed; setSeedUI(seed);
-  buildSliders(f.n);
+cf.onDragCone = (i, pos, fin) => {
+  positions[i] = [pos[0], pos[1]];
+  if (!fin) { cf.setPreview(betas, positions); cf.setMarkers(true); }
 };
 
 // ---------- solver worker ----------
-const worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });
-let runId = 0, running = false, meta: FlowMeta | null = null;
-let frames: FlowFrame[] = [];
+const spawn = () => new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });
+let worker = spawn();
+let runId = 0, running = false, meta: FlowMeta | null = null, t0 = 0, wallMs = 0, result: { rho: number; label: string; detail: string; ok: boolean } | null = null;
+let frames: Fr[] = [];
 let cur = 0;
-let timer: number | null = null;
+let cfShown: Fr | null = null;
+worker.onmessage = onWorker;
 
-worker.onmessage = (ev: MessageEvent<FromWorker>) => {
+/** A chunk of the solver cannot be interrupted, so Stop terminates the worker and starts a fresh one. */
+function killWorker() { worker.terminate(); worker = spawn(); worker.onmessage = onWorker; }
+
+function triples(v: Float32Array): number[][] { const o: number[][] = new Array(v.length / 3); for (let i = 0; i < o.length; i++) o[i] = [v[3 * i], v[3 * i + 1], v[3 * i + 2]]; return o; }
+function flat(V: number[][]): Float32Array { const o = new Float32Array(V.length * 3); V.forEach((p, i) => { o[3 * i] = p[0]; o[3 * i + 1] = p[1]; o[3 * i + 2] = p[2]; }); return o; }
+
+function onWorker(ev: MessageEvent<FromWorker>) {
   const m = ev.data;
   if (m.id !== runId) return;
   if (m.type === 'meta') {
-    meta = m.meta; frames = [];
+    meta = m.meta; frames = []; cfShown = null;
     view.reset(m.meta); cf.reset(m.meta);
     $('st-v').textContent = String(m.meta.sphereVertices.length / 3);
     $('st-e').textContent = String(m.meta.edges.length / 2);
     $('st-f').textContent = String(m.meta.sphereFaces.length / 3);
-    const n = $('notice'); n.hidden = true;
-    setStatus(`Flowing (${m.meta.request.fixture ?? 'live'}): ${m.meta.label ?? ''}`);
+    $('notice').hidden = true;
+    if (m.meta.notice) $('warn').textContent = m.meta.notice;
+    setStatus(`Flowing${m.meta.request.fixture ? ` (${m.meta.request.fixture})` : ''}: rho = ${m.meta.rho.toPrecision(4)}`);
+  } else if (m.type === 'progress') {
+    setStatus(m.phase); $('loadpct').textContent = `${Math.round(100 * m.progress)}%`;
   } else if (m.type === 'frame') {
-    const f = m.frame; frames.push(f);
-    cur = frames.length - 1; showFrame();
+    const f = m.frame as Fr; f.V = triples(f.vertices); frames.push(f);
+    const sl = $('play') as HTMLInputElement; sl.max = String(frames.length - 1);
     $('loadpct').textContent = `${Math.round(100 * f.progress)}%`;
-    if (f.quality) setQuality(f.quality.label, f.quality.ok, f.quality.detail);
+    ($('playbtn') as HTMLButtonElement).disabled = false; sl.disabled = false;
+    player.show(f);
+    if (f.quality) {
+      setQuality(f.quality.label, f.quality.ok, f.quality.detail);
+      result = { rho: meta?.rho ?? NaN, label: f.quality.label, detail: f.quality.detail ?? '', ok: f.quality.ok };
+    }
   } else if (m.type === 'done') {
     finish(m.stopped);
   } else if (m.type === 'error') {
-    $('warn').textContent = m.message; finish(true);
+    running = false; wallMs = performance.now() - t0; lock(frames.length > 0);
+    setStatus('FAILED - ' + m.message);
   }
-};
+}
 
 function setStatus(s: string) { $('status').textContent = s; }
 function setQuality(label: string, ok: boolean, detail?: string) {
   const q = $('qnote'); q.textContent = label; q.className = ok ? 'good' : 'bad'; q.title = detail ?? '';
 }
-function fmt(x: number | undefined | null) { return x == null || !isFinite(x) ? '-' : x === 0 ? '0' : Math.abs(x) < 1e-3 || Math.abs(x) >= 1e4 ? x.toExponential(1) : x.toPrecision(3); }
+function fmt(x: number | undefined | null) { return x == null || !isFinite(x) ? '' : x === 0 ? '0' : Math.abs(x) < 1e-3 || Math.abs(x) >= 1e4 ? x.toExponential(1) : x.toPrecision(3); }
 
-function showFrame() {
-  const f = frames[cur]; if (!f || !meta) return;
-  view.setFrame(f, frames[0]); cf.setFrame(f);
-  const sl = $('play') as HTMLInputElement; sl.max = String(Math.max(0, frames.length - 1)); sl.value = String(cur);
-  $('tval').textContent = `t = ${f.t.toPrecision(3)}`;
-  $('playlbl').textContent = `frame ${cur + 1} / ${meta.nFrames ?? frames.length}`;
-  $('st-l').textContent = f.lenRelRms == null ? '-' : (100 * f.lenRelRms).toFixed(2) + ' %';
-  $('st-c').textContent = fmt(f.coneDefectErr);
-  $('st-g').textContent = fmt(f.gbError);
-  const fl = $('notice');
-  if (meta.notice && cur === frames.length - 1 && !running) { fl.textContent = meta.notice; fl.hidden = false; } else fl.hidden = true;
+// ---------- display + smooth playback ----------
+function display(p: PFrame) {
+  const fr = p as Fr, to = (fr.fp ? fr.fp.to : fr) as Fr;
+  if (!meta) return;
+  const shown: FlowFrame = fr.fp ? { ...to, vertices: flat(fr.V) } : to;
+  view.setFrame(shown, frames[0]);
+  if (cfShown !== to) { cf.setFrame(to); cfShown = to; }
+  $('st-l').textContent = to.lenRelRms == null ? '' : (100 * to.lenRelRms).toFixed(2) + ' %';
+  $('st-c').textContent = fmt(to.coneDefectErr);
+  if (!fr.fp) {
+    cur = Math.max(0, frames.indexOf(to));
+    const sl = $('play') as HTMLInputElement; sl.value = String(cur);
+    $('tval').textContent = `t = ${to.t.toPrecision(3)}`;
+    $('playlbl').textContent = `frame ${cur + 1} / ${meta.nFrames ?? frames.length}`;
+  }
   updateLegend();
 }
+const player = new Player({
+  frames: () => frames, set: display,
+  setSlider(k) { if (k < 0) return; cur = k; ($('play') as HTMLInputElement).value = String(k); const f = frames[k]; if (f) { $('tval').textContent = `t = ${f.t.toPrecision(3)}`; $('playlbl').textContent = `frame ${k + 1} / ${meta?.nFrames ?? frames.length}`; } },
+  follow: () => true, smooth: () => smoothOn,
+  setPlayLabel: t => { $('playbtn').textContent = t; },
+  sliderValue: () => parseInt(($('play') as HTMLInputElement).value, 10),
+});
+function showFrame() { const f = frames[cur]; if (f) display(f); }
 function redraw() { if (frames.length) showFrame(); }
 
-function lock(locked: boolean) {
-  ($('play') as HTMLInputElement).disabled = locked;
-  ($('playbtn') as HTMLButtonElement).disabled = locked;
+function lock(haveFrames: boolean) {
+  ($('play') as HTMLInputElement).disabled = !haveFrames;
+  ($('playbtn') as HTMLButtonElement).disabled = !haveFrames;
   ($('stop') as HTMLButtonElement).disabled = !running;
   ($('gen') as HTMLButtonElement).disabled = running;
 }
 function finish(stopped: boolean) {
-  running = false; lock(false);
-  if (!frames.length) { lock(true); return; }
+  running = false; wallMs = performance.now() - t0; lock(frames.length > 0);
+  if (!frames.length) { setStatus(stopped ? 'Stopped.' : 'Done: no frames.'); return; }
   setStatus(stopped ? `Stopped at frame ${cur + 1}.` : `Done: ${frames.length} frames, t = 0 .. ${frames[frames.length - 1].t.toPrecision(3)}.`);
   if (!stopped) $('loadpct').textContent = '100%';
-  showFrame();
+  if (stopped) player.stop(true);
 }
 
-function stopPlay() { if (timer != null) { clearInterval(timer); timer = null; } $('playbtn').textContent = 'Play'; }
-($('play') as HTMLInputElement).oninput = e => { stopPlay(); cur = +(e.target as HTMLInputElement).value; showFrame(); };
-$('playbtn').onclick = () => {
-  if (timer != null) { stopPlay(); return; }
-  if (cur >= frames.length - 1) cur = 0;
-  $('playbtn').textContent = 'Pause';
-  timer = window.setInterval(() => {
-    if (cur >= frames.length - 1) { stopPlay(); return; }
-    cur++; showFrame();
-  }, 220);
-};
+($('play') as HTMLInputElement).oninput = e => { const k = +(e.target as HTMLInputElement).value; player.seek(frames[k]); cur = k; showFrame(); };
+$('playbtn').onclick = () => player.play();
+
+function clearStats() { for (const id of ['st-v', 'st-e', 'st-f', 'st-l', 'st-c']) $(id).textContent = ''; }
+/** Drop the shown flow and return to the cone preview. */
+function toPreview() {
+  player.stop(false);
+  if (running) { runId++; killWorker(); running = false; }
+  frames = []; meta = null; cur = 0; cfShown = null; result = null;
+  view.clear(); clearStats();
+  $('loadpct').textContent = ''; $('qnote').textContent = ''; $('qnote').title = ''; $('tval').textContent = ''; $('playlbl').textContent = ''; $('notice').hidden = true; $('warn').textContent = '';
+  ($('play') as HTMLInputElement).max = '0'; ($('play') as HTMLInputElement).value = '0';
+  setStatus(''); lock(false);
+}
 
 function start() {
-  stopPlay();
-  if (running) worker.postMessage({ cmd: 'stop', id: runId } satisfies ToWorker);
-  $('warn').textContent = ''; $('qnote').textContent = ''; $('loadpct').textContent = '0%';
-  const req: FlowRequest = { n: betas.length, betas: betas.slice(), positions: positions.map(p => [...p] as [number, number]), seed, fixture: fixSel.value || undefined };
-  runId++; running = true; frames = []; cur = 0; lock(true);
+  toPreview();
+  const req: FlowRequest = { n: betas.length, betas: betas.slice(), positions: positions.map(p => [...p] as [number, number]), seed, level };
+  cf.setMarkers(false);
+  runId++; running = true; t0 = performance.now(); wallMs = 0; lock(false);
   ($('stop') as HTMLButtonElement).disabled = false;
+  $('loadpct').textContent = '0%';
   setStatus('Starting…');
-  worker.postMessage({ cmd: 'start', id: runId, req, solver: 'fixture', baseUrl: fixturesBase } satisfies ToWorker);
+  worker.postMessage({ cmd: 'start', id: runId, req, solver: fixturesMode ? 'fixture' : 'wasm', baseUrl: fixturesBase } satisfies ToWorker);
 }
 $('gen').onclick = start;
-$('stop').onclick = () => { worker.postMessage({ cmd: 'stop', id: runId } satisfies ToWorker); };
+$('stop').onclick = () => {
+  if (!running) return;
+  runId++; killWorker(); // a chunk cannot be interrupted: terminate and respawn
+  finish(true);
+};
 $('reset').onclick = () => {
-  stopPlay(); if (running) worker.postMessage({ cmd: 'stop', id: runId } satisfies ToWorker);
-  runId++; running = false; frames = []; meta = null; cur = 0;
-  fixSel.value = ''; seed = 'gluing'; setSeedUI(seed); ($('nsel') as HTMLSelectElement).value = '4'; betas = []; buildSliders(4);
-  for (const id of ['st-v', 'st-e', 'st-f', 'st-l', 'st-c', 'st-g']) $(id).textContent = '-';
-  $('loadpct').textContent = ''; $('qnote').textContent = ''; $('tval').textContent = ''; $('playlbl').textContent = ''; $('notice').hidden = true;
-  setStatus('Ready.'); lock(true); ($('gen') as HTMLButtonElement).disabled = false;
+  toPreview();
+  seed = 'gluing'; setSeedUI(seed); level = 'coarse'; setLevelUI(level); smoothOn = true; setSmoothUI('on');
+  ($('nsel') as HTMLSelectElement).value = '4'; betas = []; buildSliders(4);
 };
 
 // test hook for screenshots / automation
+function setConfig(c: { positions?: number[][]; betas?: number[]; seed?: SeedSurface; level?: Level; smooth?: boolean }) {
+  if (c.betas) {
+    ($('nsel') as HTMLSelectElement).value = String(c.betas.length); betas = c.betas.slice(); buildSliders(c.betas.length);
+    betas.forEach((b, i) => { sliderEls[i].sl.value = String(b); sliderEls[i].lab.textContent = `β = ${b.toFixed(3)}`; });
+  }
+  if (c.positions) positions = c.positions.map(p => [p[0], p[1]] as [number, number]);
+  if (c.seed) { seed = c.seed; setSeedUI(seed); }
+  if (c.level) { level = c.level; setLevelUI(level); }
+  if (c.smooth != null) { smoothOn = c.smooth; setSmoothUI(smoothOn ? 'on' : 'off'); }
+  configChanged();
+}
 (window as unknown as Record<string, unknown>).__flow = {
-  frames: () => frames.length, running: () => running, seek: (k: number) => { stopPlay(); cur = Math.min(k, frames.length - 1); showFrame(); },
-  setFixture: (name: string) => { fixSel.value = name; fixSel.onchange?.(new Event('change')); },
+  frames: () => frames.length, running: () => running, setConfig, generate: start,
+  seek: (k: number) => { player.seek(frames[Math.min(k, frames.length - 1)]); cur = Math.min(k, frames.length - 1); showFrame(); },
+  result: () => result, wallMs: () => wallMs, status: () => $('status').textContent, positions: () => positions, betas: () => betas,
 };
 
-buildSliders(4); lock(true); ($('gen') as HTMLButtonElement).disabled = false;
+buildSliders(4); lock(false);
 applyTheme();
-loadIndex().catch(e => { $('warn').textContent = 'Could not load fixtures: ' + e; });

@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "fixtures": "node scripts/fixtures-to-json.mjs",
+    "fixtures": "node scripts/fixtures-to-json.mjs --force",
     "prebuild": "node scripts/fixtures-to-json.mjs",
     "predev": "node scripts/fixtures-to-json.mjs",
     "dev": "vite",

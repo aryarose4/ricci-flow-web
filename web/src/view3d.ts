@@ -73,6 +73,13 @@ export class View3D {
     this.controls.target.set(0, 0, 0); this.controls.update();
   }
 
+  /** Back to the empty state (no flow shown). */
+  clear() {
+    this.frame = null; this.frame0 = null; this.meta = null; this.fitted = false; this.labels.textContent = ''; this.coneEls = [];
+    this.mesh.visible = false; this.wire.visible = false; this.wfLines.visible = false; this.onLegend?.();
+    this.renderer.render(this.scene, this.camera);
+  }
+
   setFrame(f: FlowFrame, f0?: FlowFrame) {
     this.frame = f; this.frame0 = f0 ?? this.frame0 ?? f;
     if (!this.fitted) {

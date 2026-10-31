@@ -1,12 +1,14 @@
 // Converts ../fixtures/*/{arrays.npz,fixture.json} into public/fixtures/*.json (+ index.json).
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, existsSync } from 'node:fs';
-import { unzipSync } from 'fflate';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
+// Only needed for the ?fixtures=1 test mode. Skipped (exit 0) unless FIXTURES=1 or --force, and when ../fixtures is absent.
+if (process.env.FIXTURES !== '1' && !process.argv.includes('--force')) { console.log('fixtures-to-json: skipped (set FIXTURES=1 or run `npm run fixtures`)'); process.exit(0); }
 const here = dirname(fileURLToPath(import.meta.url));
 const src = join(here, '..', '..', 'fixtures');
 const out = join(here, '..', 'public', 'fixtures');
+if (!existsSync(src)) { console.log('fixtures-to-json: no ../fixtures directory, skipped'); process.exit(0); }
 mkdirSync(out, { recursive: true });
 
 function parseNpy(buf) {
@@ -32,6 +34,7 @@ const r = (x, d = 6) => (Number.isFinite(x) ? Math.round(x * 10 ** d) / 10 ** d 
 const rows = (a, k) => { const w = a.data.length / a.shape[0]; return Array.from({ length: a.shape[0] }, (_, i) => Array.from(a.data.subarray ? a.data.subarray(i * w, (i + 1) * w) : a.data.slice(i * w, (i + 1) * w))); };
 const flat = (x, d) => Array.from(x, v => r(v, d));
 
+const { unzipSync } = await import('fflate');
 const names = readdirSync(src, { withFileTypes: true }).filter(e => e.isDirectory() && existsSync(join(src, e.name, 'arrays.npz'))).map(e => e.name).sort();
 const index = [];
 for (const name of names) {

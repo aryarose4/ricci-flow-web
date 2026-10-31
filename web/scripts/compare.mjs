@@ -25,10 +25,12 @@ try {
     let ctx = await browser.newContext(opts); await ctx.addInitScript(init, theme);
     let page = await ctx.newPage();
     await page.goto('http://127.0.0.1:4392/');
-    await page.waitForFunction(() => document.querySelectorAll('#fixture option').length > 1);
-    await page.evaluate(n => window.__flow.setFixture(n), name);
-    await page.click('#gen');
-    await page.waitForFunction(() => window.__flow.frames() > 0 && !window.__flow.running(), null, { timeout: 60000 });
+    await page.evaluate(r => window.__flow.setConfig({ positions: r.positions, betas: r.betas, seed: r.seed_surface, level: 'coarse' }), req);
+    const t0 = Date.now();
+    await page.evaluate(() => window.__flow.generate());
+    await page.waitForFunction(() => window.__flow.frames() > 0 && !window.__flow.running(), null, { timeout: 280000 });
+    console.log(name, theme, 'port wall ms', Date.now() - t0, JSON.stringify(await page.evaluate(() => window.__flow.result())));
+    await page.waitForTimeout(4000);
     if (ov) await page.click(`#overlay input[value=${ov}]`);
     await page.waitForTimeout(800);
     const port = await page.screenshot({ fullPage: true }); await ctx.close();
@@ -54,9 +56,9 @@ try {
     const b64 = b => 'data:image/png;base64,' + b.toString('base64');
     await page.setContent(`<body style="margin:0;background:#888;font:bold 18px sans-serif;color:#fff"><div style="display:flex;gap:20px;padding:10px"><div>Python (current page)<br><img src="${b64(py)}"></div><div>Port<br><img src="${b64(port)}"></div></div>`);
     await page.waitForTimeout(500);
-    await page.screenshot({ path: join(outDir, `compare_${name}_${theme}${sfx}.png`), fullPage: true });
+    await page.screenshot({ path: join(outDir, `live_compare_${name}_${theme}${sfx}.png`), fullPage: true });
     await ctx.close();
-    console.log('wrote', `compare_${name}_${theme}${sfx}.png`);
+    console.log('wrote', `live_compare_${name}_${theme}${sfx}.png`);
   }
 } catch (e) { console.error(e); code = 1; } finally { await browser.close(); srv.kill(); }
 process.exit(code);

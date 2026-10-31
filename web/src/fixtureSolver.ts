@@ -19,7 +19,7 @@ export class FixtureSolver implements Solver {
     return best.name;
   }
 
-  async run(req: FlowRequest, onMeta: (m: FlowMeta) => void, onFrame: (f: FlowFrame) => void, signal: AbortSignal) {
+  async run(req: FlowRequest, onMeta: (m: FlowMeta) => void, onFrame: (f: FlowFrame) => void, signal: AbortSignal, _onProgress?: (p: number, phase: string) => void) {
     const name = await this.pick(req);
     const doc = await (await fetch(this.baseUrl + name + '.json', { signal })).json();
     const sv = new Float32Array(doc.sphereVertices);

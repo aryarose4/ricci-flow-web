@@ -30,9 +30,10 @@
       <div class="btns"><button id="gen" class="primary">Flow</button><button id="stop" disabled>Stop</button><span id="loadpct"></span></div>
     </section>
     <section id="col-solver"><h4>Solver</h4>
-      <div class="opt"><div class="optl" title="The metric True Ricci Flow starts from at t = 0. Cone Gluing: a round sphere with a cone glued into a disk around each cone point. Smart Seed: the round metric times prod |z - p_i|^(2(beta_i - 1)), the flat-cone far field. Polytope: a flat-faced polytope whose corners carry the cone angles.">Initial Metric</div><div class="choice" id="seed"></div></div>
-      <div class="opt"><div class="optl" title="Fixture build: frames are streamed from golden data, the nearest stored configuration is used.">Data source</div><select id="fixture"></select></div>
-      <div class="opt mut small" id="srcnote">Fixture mode: the nearest stored configuration is played back.</div>
+      <div class="opt"><div class="optl" title="How the 3D surface is built. True Ricci Flow: the cone-preserving Ricci flow itself, solved intrinsically from the chosen Initial Metric; each frame is realized in 3D by the Fast solver (near-isometric, shallow reflex edges, not exact convex polytopes). Fast Uniformizer: builds one 3D surface directly (rho &gt; 0: Gauss-Newton then Levenberg-Marquardt with a fading bending term; rho &lt; 0: best uniform-curvature realization, NOT an embedding). Experimental options are never certified.">Mode</div><div class="choice" id="realizer"></div></div>
+      <div class="opt"><div class="optl" title="The metric True Ricci Flow starts from at t = 0. Cone Gluing: a round sphere with a cone glued into a disk around each cone point. Smart Seed: the round metric times prod |z - p_i|^(2(beta_i - 1)), the flat-cone far field. Polytope: a flat-faced polytope whose corners carry the cone angles (plus four extra corners that take up the remaining curvature).">Initial Metric</div><div class="choice" id="seed"></div></div>
+      <div class="opt"><div class="optl" title="How finely the surface is divided into triangles. Finer looks smoother but takes longer.">Mesh Resolution</div><div class="choice" id="ressel"></div></div>
+      <div class="opt" id="opt-fpsmooth"><div class="optl" title="Smoother, faster animation: interpolates between frames with big jumps (rigidly aligned), caps each Gauss-Newton step at 3% of the bounding-box diagonal, and stops Gauss-Newton early once converged. Off: raw solver frames.">Smooth Playback</div><div class="choice" id="fpsmooth"></div></div>
     </section>
     <section id="col-view"><h4>View</h4>
       <div class="opt"><div class="optl" title="How the 3D cells are drawn. Reflective: lit faces with a specular highlight. Plain: lit faces, no highlight. Wireframe: edges only; with an Overlay active each edge takes the average value of its adjacent faces.">Cell Shading</div><div class="choice" id="shade"></div></div>
@@ -41,15 +42,15 @@
     </section>
   </div>
   <div id="bottom"><div id="statusbar">
-    <div id="statusrow"><span id="status" aria-live="polite">Ready.</span><span id="qnote"></span></div>
+    <div id="statusrow"><span id="status" aria-live="polite"></span><span id="qnote"></span></div>
     <div id="stats"><div id="st-mesh">
-      <div class="st"><span>Vertices</span><b id="st-v">-</b></div>
-      <div class="st"><span>Edges</span><b id="st-e">-</b></div>
-      <div class="st"><span>Faces</span><b id="st-f">-</b></div></div>
+      <div class="st" title="Number of corner points in the 3D mesh"><span>Vertices</span><b id="st-v"></b></div>
+      <div class="st" title="Number of straight segments joining the corner points"><span>Edges</span><b id="st-e"></b></div>
+      <div class="st" title="Number of small triangles that make up the surface"><span>Faces</span><b id="st-f"></b></div></div>
       <div id="st-acc">
-      <div class="st" title="RMS over mesh edges of |l_3D - l_target| / l_target for the current frame"><span>Edge length accuracy (RMS error)</span><b id="st-l">-</b></div>
-      <div class="st" title="max over cones of |angle sum - 2 pi beta|"><span>Max cone angle error (rad)</span><b id="st-c">-</b></div>
-      <div class="st" title="Gauss-Bonnet residual: sum of angle defects minus 4 pi"><span>Gauss-Bonnet residual</span><b id="st-g">-</b></div></div>
+      <div class="st" title="Root-mean-square over all mesh edges of |l_3D - l_target| / l_target, where l_3D is the edge length in the displayed 3D surface and l_target is the edge length of the target (flowed) metric. Shown as a percentage; 0% means every edge has exactly the target length. Shown for the current flow frame; blank before a flow has run."><span>Edge length accuracy (RMS error)</span><b id="st-l"></b></div>
+      <div class="st" title="max over cones i of | (total triangle angle at cone vertex i) - 2*pi*beta_i |, in radians. 0 means exact."><span>Max cone angle error (rad)</span><b id="st-c"></b></div>
+</div>
     </div></div></div>
 </main>
 <script type="module" src="/src/main.ts"></script>

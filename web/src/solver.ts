@@ -7,6 +7,8 @@ export interface FlowRequest {
   betas: number[];            // cone angle / 2pi
   positions: [number, number][]; // stereographic-plane cone positions
   seed: SeedSurface;
+  /** Mesh resolution level (WasmSolver). */
+  level?: 'coarse' | 'medium' | 'fine' | 'extra';
   /** FixtureSolver only: force a specific fixture name. */
   fixture?: string;
 }
@@ -58,7 +60,8 @@ export interface FlowFrame {
 
 export interface Solver {
   /** Resolve once the whole flow has been streamed (or aborted). */
-  run(req: FlowRequest, onMeta: (m: FlowMeta) => void, onFrame: (f: FlowFrame) => void, signal: AbortSignal): Promise<void>;
+  run(req: FlowRequest, onMeta: (m: FlowMeta) => void, onFrame: (f: FlowFrame) => void, signal: AbortSignal,
+      onProgress?: (progress: number, phase: string) => void): Promise<void>;
 }
 
 // worker protocol
@@ -68,5 +71,6 @@ export type ToWorker =
 export type FromWorker =
   | { type: 'meta'; id: number; meta: FlowMeta }
   | { type: 'frame'; id: number; frame: FlowFrame }
+  | { type: 'progress'; id: number; progress: number; phase: string }
   | { type: 'done'; id: number; stopped: boolean }
   | { type: 'error'; id: number; message: string };

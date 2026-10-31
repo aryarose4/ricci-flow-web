@@ -16,7 +16,8 @@ self.onmessage = async (ev: MessageEvent<ToWorker>) => {
     await solver.run(m.req,
       meta => post({ type: 'meta', id: m.id, meta }),
       frame => post({ type: 'frame', id: m.id, frame }),
-      ac.signal);
+      ac.signal,
+      (progress, phase) => post({ type: 'progress', id: m.id, progress, phase }));
     post({ type: 'done', id: m.id, stopped: ac.signal.aborted });
   } catch (e) {
     if (ac.signal.aborted) post({ type: 'done', id: m.id, stopped: true });
