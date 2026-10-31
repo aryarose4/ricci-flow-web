@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Curvature Flow</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='6' fill='%233a8fd6'/%3E%3C/svg%3E">
+</head>
+<body>
+<div id="topnav"><span class="brand">singular_ricci</span><span class="tab on">Curvature Flow</span><span class="grow"></span><button id="theme" title="Switch between light and dark">Dark mode</button></div>
+<main id="app">
+  <div id="topbar"><h3>Curvature Flow</h3><button id="reset" title="Stop any running flow and return to the default cones and view">Reset</button><span id="warn" role="alert"></span></div>
+  <div id="views">
+    <div id="cfbox"><h4>Conformal Factor (North/South)</h4>
+      <div class="cvbox"><canvas id="cf-n"></canvas></div>
+      <div class="cvbox"><canvas id="cf-s"></canvas></div>
+    </div>
+    <div id="embbox"><h4>3D Embedding</h4>
+      <div class="cvbox" id="cvbox"><div id="notice" hidden></div><canvas id="cv"></canvas><div id="lbls"></div>
+        <div id="legend" hidden><b id="lg-title">Length Fit</b><div class="bar" id="lg-bar"></div><div class="ends"><span id="lg-lo"></span><span id="lg-mid">Target</span><span id="lg-hi"></span></div></div>
+      </div>
+    </div>
+  </div>
+  <div id="playbox"><button id="playbtn" disabled>Play</button><input type="range" id="play" min="0" max="0" step="1" value="0" disabled aria-label="Playback position"><span id="tval"></span><span id="playlbl" class="mut"></span></div>
+  <div id="panel">
+    <section id="col-cones"><h4>Cone Angles</h4>
+      <div class="opt nsel"><label class="optl" for="nsel">Number of Cones</label> <select id="nsel"><option>3</option><option selected>4</option><option>5</option></select></div>
+      <div id="sliders"></div>
+      <div class="rho" id="rholine">Curvature &rho; = <b id="rhoval"></b> <span id="rhonote" class="mut"></span></div>
+      <div class="btns"><button id="gen" class="primary">Flow</button><button id="stop" disabled>Stop</button><span id="loadpct"></span></div>
+    </section>
+    <section id="col-solver"><h4>Solver</h4>
+      <div class="opt"><div class="optl" title="The metric True Ricci Flow starts from at t = 0. Cone Gluing: a round sphere with a cone glued into a disk around each cone point. Smart Seed: the round metric times prod |z - p_i|^(2(beta_i - 1)), the flat-cone far field. Polytope: a flat-faced polytope whose corners carry the cone angles.">Initial Metric</div><div class="choice" id="seed"></div></div>
+      <div class="opt"><div class="optl" title="Fixture build: frames are streamed from golden data, the nearest stored configuration is used.">Data source</div><select id="fixture"></select></div>
+      <div class="opt mut small" id="srcnote">Fixture mode: the nearest stored configuration is played back.</div>
+    </section>
+    <section id="col-view"><h4>View</h4>
+      <div class="opt"><div class="optl">Cell Shading</div><div class="choice" id="shade"></div></div>
+      <div class="opt"><div class="optl">Overlay</div><div class="choice" id="overlay"></div></div>
+    </section>
+  </div>
+  <div id="bottom"><div id="statusbar">
+    <div id="statusrow"><span id="status" aria-live="polite">Ready.</span><span id="qnote"></span></div>
+    <div id="stats"><div id="st-mesh">
+      <div class="st"><span>Vertices</span><b id="st-v">-</b></div>
+      <div class="st"><span>Edges</span><b id="st-e">-</b></div>
+      <div class="st"><span>Faces</span><b id="st-f">-</b></div></div>
+      <div id="st-acc">
+      <div class="st" title="RMS over mesh edges of |l_3D - l_target| / l_target for the current frame"><span>Edge length accuracy (RMS error)</span><b id="st-l">-</b></div>
+      <div class="st" title="max over cones of |angle sum - 2 pi beta|"><span>Max cone angle error (rad)</span><b id="st-c">-</b></div>
+      <div class="st" title="Gauss-Bonnet residual: sum of angle defects minus 4 pi"><span>Gauss-Bonnet residual</span><b id="st-g">-</b></div></div>
+    </div></div></div>
+</main>
+<script type="module" src="/src/main.ts"></script>
+</body>
+</html>

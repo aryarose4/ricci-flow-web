@@ -1,0 +1,25 @@
+{
+  "name": "ricci-flow-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "fixtures": "node scripts/fixtures-to-json.mjs",
+    "prebuild": "node scripts/fixtures-to-json.mjs",
+    "predev": "node scripts/fixtures-to-json.mjs",
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --host 127.0.0.1 --port 4391",
+    "screenshots": "node scripts/screenshots.mjs"
+  },
+  "dependencies": {
+    "three": "0.187.0"
+  },
+  "devDependencies": {
+    "@types/three": "0.187.0",
+    "fflate": "0.8.3",
+    "playwright": "1.64.1",
+    "typescript": "5.9.3",
+    "vite": "8.3.5"
+  }
+}
