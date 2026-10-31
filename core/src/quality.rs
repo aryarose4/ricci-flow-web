@@ -5,14 +5,18 @@
 pub const QUALITY_LEN_RMS: f64 = 0.01;
 pub const QUALITY_LEN_MAX: f64 = 0.05;
 
-/// The per-frame fields `frame_quality` reads.  `q_len_*` (when set) override `len_*`
-/// (Polytope frame 0: quality reads the smooth fit, the display shows the polytope).
+/// The per-frame fields `frame_quality` reads, with Python dict semantics:
+/// `None` = key present with value None (or absent: `r.get` gives None either way for `len_*`).
+/// `has_q` = the `q_len_rel_*` keys are PRESENT in the row (Polytope frame 0); then they are read
+/// verbatim, even when None (`r.get("q_len_rel_rms", ...)` returns a present None, no fallback).
+/// Without `has_q` the `len_rel_*` values are read.
 #[derive(Clone, Debug, Default)]
 pub struct FrameRow {
     pub len_rel_max: Option<f64>,
     pub len_rel_rms: Option<f64>,
     pub q_len_rel_max: Option<f64>,
     pub q_len_rel_rms: Option<f64>,
+    pub has_q: bool,
     pub n_deep: usize,
     pub seed_folds: bool,
     pub embed_lost: bool,
@@ -27,8 +31,7 @@ pub struct Quality {
 
 /// `frame_quality(r)` -> (passes, reasons).
 pub fn frame_quality(r: &FrameRow) -> (bool, Vec<&'static str>) {
-    let lmax = r.q_len_rel_max.or(r.len_rel_max);
-    let lrms = r.q_len_rel_rms.or(r.len_rel_rms);
+    let (lmax, lrms) = if r.has_q { (r.q_len_rel_max, r.q_len_rel_rms) } else { (r.len_rel_max, r.len_rel_rms) };
     let mut reasons = Vec::new();
     if r.n_deep > 0 && !r.seed_folds {
         reasons.push("crumpled");
@@ -95,5 +98,33 @@ pub fn mark_seed_folds(rows: &mut [FrameRow], polytope_seed: bool) {
             r.seed_folds = true;
             prev = Some(nd);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn row(max: f64, rms: Option<f64>) -> FrameRow {
+        FrameRow { len_rel_max: Some(max), len_rel_rms: rms, ..Default::default() }
+    }
+    #[test]
+    fn rms_limit_and_present_none() {
+        // passes max (4 %) but fails rms (2 % > 1 %) on the final frame -> Best Attempt
+        let q = flow_quality(&[row(0.01, Some(0.001)), row(0.04, Some(0.02))]).unwrap();
+        assert_eq!(q.label, "Best Attempt (can't reach intrinsic metric)");
+        // rms failing only on an earlier frame -> Certified Target
+        let q = flow_quality(&[row(0.04, Some(0.02)), row(0.01, Some(0.001))]).unwrap();
+        assert_eq!(q.label, "Certified Target");
+        // rms None (FastRealizer diag has no len_rel_rms) -> only max is checked
+        assert!(frame_quality(&row(0.04, None)).0);
+        // present-None q keys: the row's own (failing) rms is NOT read (no fallback)
+        let mut r = row(0.12, Some(0.02));
+        r.has_q = true;
+        r.q_len_rel_max = Some(0.003);
+        r.q_len_rel_rms = None;
+        assert!(frame_quality(&r).0);
+        // present q rms that fails the limit -> fails
+        r.q_len_rel_rms = Some(0.02);
+        assert!(!frame_quality(&r).0);
     }
 }

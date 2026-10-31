@@ -52,3 +52,7 @@
 - Both sparse solvers are kept. The flow's Newton step uses faer's sparse LU: the matrix is nonsymmetric, with a
   Sherman-Morrison update, and this takes about 5 % of the wall time. The LM normal equations use the skyline
   Cholesky, which needs an SPD matrix. One cannot replace the other unless a nonsymmetric skyline LU is written.
+
+## 2026-10-30 — quality present-None fix (verifier follow-up)
+- quality.rs: `FrameRow.has_q` models Python key presence: with q_ keys present they are read verbatim (present None = no fallback); `.or()` fallback removed. Unit test `quality::tests::rms_limit_and_present_none` (rms-only failure on last frame -> Best Attempt; on earlier frame -> Certified Target; present-None q rms ignores the row rms).
+- Fast-realizer rows keep len_rel_rms = None on purpose: Python FastRealizer diag (true_flow.py:569) has no len_rel_rms key (the :464 one is the GN realizer), so Python never applies the rms limit in fast mode; fixtures store NaN. All 5 labels still match.

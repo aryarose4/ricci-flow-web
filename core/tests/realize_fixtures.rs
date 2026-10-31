@@ -159,6 +159,7 @@ fn run_fixture(name: &str) -> bool {
     if seed == "polytope" {
         rows[0].q_len_rel_max = rows[0].len_rel_max;
         rows[0].q_len_rel_rms = rows[0].len_rel_rms;
+        rows[0].has_q = true;
         if let Some(p) = realize::polytope_vertices(&mesh, &res[0].x, &[cones.clone(), corners.clone()].concat(), &lf[0]) {
             rows[0].len_rel_max = Some(p.len_rel_max);
             xs[0] = p.x;

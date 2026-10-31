@@ -364,19 +364,23 @@ impl Session {
                 let mut rows: Vec<FrameOut> = self.frames.iter().zip(&res).map(|(f, r)| self.row_of(f, r)).collect();
                 let mut qrows: Vec<FrameRow> = rows
                     .iter()
+                    // Python make_row: len_rel_rms = rf.diag.get("len_rel_rms") is None for the Fast realizer
+                    // (true_flow.FastRealizer's diag has no len_rel_rms key; fixtures store NaN), so
+                    // frame_quality checks only len_rel_max there.
                     .map(|r| FrameRow { len_rel_max: Some(r.len_rel_max), len_rel_rms: None, n_deep: r.n_deep, ..Default::default() })
                     .collect();
                 if self.cfg.seed == Seed::Polytope {
                     // quality reads the smooth fit's errors; the display shows the polytope's own
                     qrows[0].q_len_rel_max = qrows[0].len_rel_max;
-                    qrows[0].q_len_rel_rms = None;
+                    qrows[0].q_len_rel_rms = qrows[0].len_rel_rms; // the fit's: None (see above)
+                    qrows[0].has_q = true;
                     let mut r0 = rows[0].clone();
                     r0.polytope = true;
                     self.apply_polytope(&mut r0);
                     r0.polytope = true;
                     qrows[0].len_rel_max = Some(r0.len_rel_max);
-                    // Python: the q_len_rel_rms key is present (None), so the polytope's rms is not read
-                    qrows[0].len_rel_rms = None;
+                    // display values; quality reads the present q_ keys (has_q), never these
+                    qrows[0].len_rel_rms = Some(r0.len_rel_rms);
                     rows[0] = r0;
                 }
                 mark_seed_folds(&mut qrows, self.cfg.seed == Seed::Polytope);
