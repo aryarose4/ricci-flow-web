@@ -15,3 +15,4 @@ pub mod hull;
 pub mod lm;
 pub mod quality;
 pub mod realize;
+pub mod seedmesh;
