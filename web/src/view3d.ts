@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { BLUES_LUT, shadeVal, diverge } from './shading';
+import { BLUES_LUT, shadeVal, pickLut, RAW_COLOR_SPACE } from './shading';
+import { CurvatureOverlay } from './curvature';
 import type { FlowFrame, FlowMeta } from './solver';
 
 export type Shading = 'reflective' | 'plain' | 'wireframe';
@@ -9,24 +10,33 @@ export type Overlay = 'none' | 'length' | 'gauss';
 export class View3D {
   private renderer: THREE.WebGLRenderer;
   private scene = new THREE.Scene();
-  private camera = new THREE.PerspectiveCamera(32, 1, 0.01, 100);
+  // The Python page draws an orthographic projection (flat painter); match it.
+  private camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.01, 100);
   private controls: OrbitControls;
-  private mesh = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide }));
+  private mesh = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.FrontSide }));
   private wire = new THREE.LineSegments(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ transparent: true, opacity: 0.15 }));
+  private wfLines = new THREE.LineSegments(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, depthTest: false }));
   private frame: FlowFrame | null = null;
+  private frame0: FlowFrame | null = null;
   private meta: FlowMeta | null = null;
-  private center = new THREE.Vector3();
+  private center = new THREE.Vector3(); // fixed at the origin, like the Python page
+  private radius = 1;
   private fitted = false;
+  /** Python page's initial orientation: rotX(-0.45) . rotY(pi) (it looks at the surface from the far side), applied to the data. */
+  private Rm = (() => { const c = Math.cos(0.45), sn = Math.sin(-0.45); return [[-1, 0, 0], [0, c, sn], [0, sn, -c]]; })();
+  private dark = false;
   private coneEls: HTMLElement[] = [];
+  readonly curv = new CurvatureOverlay();
   shading: Shading = 'reflective';
   overlay: Overlay = 'none';
-  legendRange = 0;
+  legendRange: [number, number] = [0, 0];
   onLegend: (() => void) | null = null;
 
   constructor(private canvas: HTMLCanvasElement, private labels: HTMLElement) {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
-    this.scene.add(this.mesh, this.wire);
-    this.camera.position.set(0, 0, 4.2);
+    this.renderer.outputColorSpace = RAW_COLOR_SPACE;
+    this.scene.add(this.mesh, this.wire, this.wfLines);
+    this.camera.position.set(0, 0, 10);
     this.controls = new OrbitControls(this.camera, canvas);
     this.controls.enableDamping = false;
     this.controls.addEventListener('change', () => this.render());
@@ -35,41 +45,48 @@ export class View3D {
   }
 
   setTheme(dark: boolean) {
-    (this.wire.material as THREE.LineBasicMaterial).color.set(dark ? 0xffffff : 0x000000);
+    this.dark = dark;
     this.renderer.setClearColor(dark ? 0x121417 : 0xf4f4f2, 1);
     this.render();
   }
+
+  setOverlay(o: Overlay) { this.overlay = o; this.curv.mode = o; this.curv.invalidate(); this.render(); }
+  setSensitivity(v: number) { this.curv.srel = v; this.curv.invalidate(); this.render(); }
 
   resize() {
     const p = this.canvas.parentElement!, s = Math.max(200, Math.floor(p.clientWidth));
     this.renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
     this.renderer.setSize(s, s, false);
     this.canvas.style.width = s + 'px'; this.canvas.style.height = s + 'px';
-    this.camera.aspect = 1; this.camera.updateProjectionMatrix();
     this.render();
   }
 
   reset(meta: FlowMeta) {
-    this.meta = meta; this.frame = null; this.fitted = false;
+    this.meta = meta; this.frame = null; this.frame0 = null; this.fitted = false;
+    this.curv.rho = meta.rho; this.curv.resetRange();
     this.labels.textContent = '';
     this.coneEls = meta.coneIds.map((_, i) => {
       const d = document.createElement('div'); d.className = 'cone'; d.textContent = String(i + 1);
       this.labels.appendChild(d); return d;
     });
-    this.camera.position.set(0, 0, 4.2); this.controls.target.set(0, 0, 0); this.controls.update();
+    this.camera.position.set(0, 0, 10); this.camera.zoom = 1; this.camera.updateProjectionMatrix();
+    this.controls.target.set(0, 0, 0); this.controls.update();
   }
 
-  setFrame(f: FlowFrame) {
-    this.frame = f;
+  setFrame(f: FlowFrame, f0?: FlowFrame) {
+    this.frame = f; this.frame0 = f0 ?? this.frame0 ?? f;
     if (!this.fitted) {
-      const v = f.vertices, nv = v.length / 3;
-      let cx = 0, cy = 0, cz = 0;
-      for (let i = 0; i < nv; i++) { cx += v[3 * i]; cy += v[3 * i + 1]; cz += v[3 * i + 2]; }
-      this.center.set(cx / nv, cy / nv, cz / nv); this.fitted = true;
-      let R = 0;
-      for (let i = 0; i < nv; i++) R = Math.max(R, Math.hypot(v[3 * i] - this.center.x, v[3 * i + 1] - this.center.y, v[3 * i + 2] - this.center.z));
-      const dist = (R * 1.12) / Math.sin((this.camera.fov * Math.PI) / 360);
-      this.camera.position.set(0, 0, dist); this.camera.far = dist * 10; this.camera.updateProjectionMatrix();
+      // Python page: raw origin as centre, scale = 0.38 * canvas / min(mr, 2.6) per unit of the frame-0 median radius
+      const v = f.vertices, nv = v.length / 3, rr: number[] = [];
+      for (let i = 0; i < nv; i++) rr.push(Math.hypot(v[3 * i], v[3 * i + 1], v[3 * i + 2]));
+      rr.sort((p, q) => p - q);
+      const med = rr[nv >> 1] || 1;
+      let mr = 1;
+      for (const id of this.meta?.coneIds ?? []) mr = Math.max(mr, rr.length ? Math.hypot(v[3 * id], v[3 * id + 1], v[3 * id + 2]) / med : 1);
+      this.radius = med; this.fitted = true;
+      const h = 0.5 / 0.38 * Math.min(Math.max(1, mr * 0.8), 2.6) * med; // seed tips (not in the fixtures) are nearer than the final cones
+      this.camera.left = -h; this.camera.right = h; this.camera.top = h; this.camera.bottom = -h;
+      this.camera.position.set(0, 0, med * 12); this.camera.far = med * 40; this.camera.zoom = 1; this.camera.updateProjectionMatrix();
       this.controls.target.set(0, 0, 0); this.controls.update();
     }
     this.render();
@@ -77,82 +94,88 @@ export class View3D {
 
   render() {
     const f = this.frame;
-    if (!f) { this.renderer.render(this.scene, this.camera); return; }
+    if (!f || !this.meta) { this.renderer.render(this.scene, this.camera); return; }
     this.camera.updateMatrixWorld();
-    const V = f.vertices, F = f.faces, nF = F.length / 3, c0 = this.center;
-    const pos = new Float32Array(nF * 9), col = new Float32Array(nF * 9);
+    const V = f.vertices, F = f.faces, nF = F.length / 3;
     const view = this.camera.matrixWorldInverse.elements; // column-major
-    const faceVal = this.overlayValues(f);
-    const tmp = [0, 0, 0];
+    const res = this.curv.compute(f, this.frame0 ?? f, this.meta.coneIds);
+    if (res) this.legendRange = [res.lo, res.hi];
+    const wf = this.shading === 'wireframe';
+    const pos = new Float32Array(nF * 9), col = new Float32Array(nF * 9);
     for (let k = 0; k < nF; k++) {
       const a = F[3 * k], b = F[3 * k + 1], c = F[3 * k + 2];
-      const pa = [V[3 * a] - c0.x, V[3 * a + 1] - c0.y, V[3 * a + 2] - c0.z];
-      const pb = [V[3 * b] - c0.x, V[3 * b + 1] - c0.y, V[3 * b + 2] - c0.z];
-      const pc = [V[3 * c] - c0.x, V[3 * c + 1] - c0.y, V[3 * c + 2] - c0.z];
+      const pa = this.rot(V, a), pb = this.rot(V, b), pc = this.rot(V, c);
       pos.set(pa, 9 * k); pos.set(pb, 9 * k + 3); pos.set(pc, 9 * k + 6);
       const ux = pb[0] - pa[0], uy = pb[1] - pa[1], uz = pb[2] - pa[2], wx = pc[0] - pa[0], wy = pc[1] - pa[1], wz = pc[2] - pa[2];
       const nx = uy * wz - uz * wy, ny = uz * wx - ux * wz, nz = ux * wy - uy * wx;
-      // normal into view space (rotation part of the view matrix); two-sided
-      let vx = view[0] * nx + view[4] * ny + view[8] * nz, vy = view[1] * nx + view[5] * ny + view[9] * nz, vz = view[2] * nx + view[6] * ny + view[10] * nz;
-      if (vz < 0) { vx = -vx; vy = -vy; vz = -vz; }
+      // normal into view space (rotation part of the view matrix)
+      const vx = view[0] * nx + view[4] * ny + view[8] * nz, vy = view[1] * nx + view[5] * ny + view[9] * nz, vz = view[2] * nx + view[6] * ny + view[10] * nz;
+      const si = Math.round(255 * shadeVal(vx, vy, vz));
       let r: number, g: number, bl: number;
-      if (this.overlay !== 'none') {
-        diverge(faceVal[k], tmp);
-        const s = this.shading === 'plain' ? 1 : 0.55 + 0.45 * shadeVal(vx, vy, vz);
-        r = tmp[0] * s; g = tmp[1] * s; bl = tmp[2] * s;
-      } else if (this.shading === 'plain') { r = 0.45; g = 0.62; bl = 0.82; }
-      else { const i = Math.round(255 * shadeVal(vx, vy, vz)) * 3; r = BLUES_LUT[i]; g = BLUES_LUT[i + 1]; bl = BLUES_LUT[i + 2]; }
+      if (res) {
+        // flow_curvature.py face(): Picnic colour x lighting (+ white specular highlight when Reflective)
+        const cc = pickLut(res.faceT[k]);
+        let lum = 0.62 + 0.38 * si / 255, hi = 0;
+        if (this.shading === 'reflective') { const d = Math.max(0, Math.min(1, (si / 255 - 0.35) / 0.65)); lum = 0.28 + 0.72 * d; hi = 110 * Math.pow(d, 12); }
+        r = Math.min(255, cc[0] * lum + hi) / 255; g = Math.min(255, cc[1] * lum + hi) / 255; bl = Math.min(255, cc[2] * lum + hi) / 255;
+      } else {
+        // Plain = the same lit faces compressed toward mid grey-blue (no specular range)
+        const sj = this.shading === 'plain' ? Math.round(110 + 0.45 * (si - 110)) : si;
+        r = BLUES_LUT[3 * sj]; g = BLUES_LUT[3 * sj + 1]; bl = BLUES_LUT[3 * sj + 2];
+      }
       for (let q = 0; q < 3; q++) { col[9 * k + 3 * q] = r; col[9 * k + 3 * q + 1] = g; col[9 * k + 3 * q + 2] = bl; }
     }
     const g = this.mesh.geometry;
     g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
     g.setAttribute('color', new THREE.BufferAttribute(col, 3));
-    this.mesh.visible = this.shading !== 'wireframe' || this.overlay !== 'none';
-    this.wire.geometry.dispose();
-    this.wire.geometry = new THREE.WireframeGeometry(g);
-    (this.wire.material as THREE.LineBasicMaterial).opacity = this.shading === 'wireframe' ? 0.8 : 0.15;
+    this.mesh.visible = !wf; this.wire.visible = !wf; this.wfLines.visible = wf;
+    if (!wf) {
+      this.wire.geometry.dispose();
+      this.wire.geometry = new THREE.WireframeGeometry(g);
+      (this.wire.material as THREE.LineBasicMaterial).color.set(this.dark ? 0xffffff : 0x000000);
+    } else this.buildWireframe(f, res);
     this.renderer.render(this.scene, this.camera);
     this.placeCones(f);
-  }
-
-  /** Per-face diverging value in [-1,1] for the overlay; sets legendRange (the value of +-1). */
-  private overlayValues(f: FlowFrame): Float32Array {
-    const nF = f.faces.length / 3, out = new Float32Array(nF);
-    if (this.overlay === 'none' || !this.meta) { this.legendRange = 0; return out; }
-    const nv = f.vertices.length / 3, acc = new Float32Array(nv), cnt = new Float32Array(nv);
-    if (this.overlay === 'length') {
-      const E = this.meta.edges, V = f.vertices, L = f.L;
-      if (!L) return out;
-      for (let e = 0; e < E.length / 2; e++) {
-        const a = E[2 * e], b = E[2 * e + 1];
-        const d = Math.hypot(V[3 * a] - V[3 * b], V[3 * a + 1] - V[3 * b + 1], V[3 * a + 2] - V[3 * b + 2]);
-        const x = d / L[e];
-        acc[a] += x; acc[b] += x; cnt[a]++; cnt[b]++;
-      }
-      // the 3D shape is only meaningful up to the global area scale: normalise by the median ratio
-      const r = Array.from(acc, (s, i) => s / (cnt[i] || 1)).sort((p, q) => p - q), med = r[r.length >> 1] || 1;
-      for (let i = 0; i < nv; i++) acc[i] = acc[i] / (cnt[i] || 1) / med - 1;
-    } else {
-      const cones = new Set(this.meta.coneIds);
-      const sm = Array.from(f.K).filter((_, i) => !cones.has(i)).sort((p, q) => p - q);
-      const med = sm[sm.length >> 1] || 0;
-      for (let i = 0; i < nv; i++) acc[i] = f.K[i] - med;
-    }
-    const sorted = Array.from(acc, Math.abs).sort((p, q) => p - q);
-    const m = Math.max(1e-6, sorted[Math.floor(0.98 * (nv - 1))]);
-    this.legendRange = m;
-    const F = f.faces;
-    for (let k = 0; k < nF; k++) out[k] = (acc[F[3 * k]] + acc[F[3 * k + 1]] + acc[F[3 * k + 2]]) / 3 / m;
     this.onLegend?.();
-    return out;
   }
 
+  private rot(V: Float32Array, i: number): [number, number, number] {
+    const x = V[3 * i], y = V[3 * i + 1], z = V[3 * i + 2], R = this.Rm;
+    return [R[0][0] * x + R[0][1] * y + R[0][2] * z, R[1][0] * x + R[1][1] * y + R[1][2] * z, R[2][0] * x + R[2][1] * y + R[2][2] * z];
+  }
+
+  /** Wireframe: edges only, see-through, back edges dimmer; with an overlay each edge takes the mean of its faces. */
+  private buildWireframe(f: FlowFrame, res: ReturnType<CurvatureOverlay['compute']>) {
+    const V = f.vertices, view = this.camera.matrixWorldInverse.elements, M = this.meta!;
+    const base = this.dark ? [110, 175, 225] : [8, 81, 156];
+    const E = res ? this.curv.edgeColors(f, res)
+      : Array.from({ length: M.edges.length / 2 }, (_, e) => ({ a: M.edges[2 * e], b: M.edges[2 * e + 1], rgb: base }));
+    const zOf = (i: number) => { const p = this.rot(V, i); return view[2] * p[0] + view[6] * p[1] + view[10] * p[2]; };
+    const zmx = Math.max(1e-9, this.radius);
+    const pos = new Float32Array(E.length * 6), col = new Float32Array(E.length * 8);
+    E.forEach((e, k) => {
+      const zq = Math.max(0, Math.min(1, 0.5 + 0.5 * (zOf(e.a) + zOf(e.b)) / (2 * zmx))), al = 0.28 + 0.67 * zq;
+      [e.a, e.b].forEach((v, j) => {
+        const q = this.rot(V, v); pos[6 * k + 3 * j] = q[0]; pos[6 * k + 3 * j + 1] = q[1]; pos[6 * k + 3 * j + 2] = q[2];
+        col[8 * k + 4 * j] = e.rgb[0] / 255; col[8 * k + 4 * j + 1] = e.rgb[1] / 255; col[8 * k + 4 * j + 2] = e.rgb[2] / 255; col[8 * k + 4 * j + 3] = al;
+      });
+    });
+    const g = this.wfLines.geometry;
+    g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    g.setAttribute('color', new THREE.BufferAttribute(col, 4));
+  }
+
+  /** Cone markers: red disc with a white ring and the cone number; cones on the far side are small, faded and unnumbered. */
   private placeCones(f: FlowFrame) {
     if (!this.meta) return;
     const w = this.canvas.clientWidth, h = this.canvas.clientHeight, v = new THREE.Vector3();
+    const view = this.camera.matrixWorldInverse.elements;
     this.meta.coneIds.forEach((id, i) => {
-      v.set(f.vertices[3 * id] - this.center.x, f.vertices[3 * id + 1] - this.center.y, f.vertices[3 * id + 2] - this.center.z).project(this.camera);
+      const [x, y, z] = this.rot(f.vertices, id);
+      const depth = (view[2] * x + view[6] * y + view[10] * z) / this.radius; // positive toward the viewer
+      v.set(x, y, z).project(this.camera);
       const el = this.coneEls[i]; if (!el) return;
+      el.classList.toggle('back', depth <= -0.05);
       el.style.transform = `translate(${(v.x * 0.5 + 0.5) * w}px, ${(-v.y * 0.5 + 0.5) * h}px) translate(-50%,-50%)`;
     });
   }

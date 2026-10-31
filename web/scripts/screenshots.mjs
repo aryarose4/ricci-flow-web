@@ -17,7 +17,8 @@ let code = 0;
 try {
   const browser = await chromium.launch({ args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
   for (const theme of ['light', 'dark']) {
-    const ctx = await browser.newContext({ viewport: { width: 1240, height: 1500 }, colorScheme: theme });
+    const ctx = await browser.newContext({ viewport: { width: 1240, height: 1500 } });
+    await ctx.addInitScript(t => { try { localStorage.setItem('sr-theme', t); } catch (e) {} }, theme);
     const page = await ctx.newPage();
     page.on('pageerror', e => { console.error('pageerror', e.message); code = 1; });
     await page.goto('http://127.0.0.1:4391/');

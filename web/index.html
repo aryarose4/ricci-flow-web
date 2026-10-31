@@ -7,8 +7,8 @@
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='6' fill='%233a8fd6'/%3E%3C/svg%3E">
 </head>
 <body>
-<div id="topnav"><span class="brand">singular_ricci</span><span class="tab on">Curvature Flow</span><span class="grow"></span><button id="theme" title="Switch between light and dark">Dark mode</button></div>
-<main id="app">
+<div class="topnav" id="topnav"><span class="brand">singular_ricci</span><span class="tab cur">Curvature Flow</span><button id="theme" title="Switch between light and dark">Light mode</button></div>
+<main id="page">
   <div id="topbar"><h3>Curvature Flow</h3><button id="reset" title="Stop any running flow and return to the default cones and view">Reset</button><span id="warn" role="alert"></span></div>
   <div id="views">
     <div id="cfbox"><h4>Conformal Factor (North/South)</h4>
@@ -17,7 +17,7 @@
     </div>
     <div id="embbox"><h4>3D Embedding</h4>
       <div class="cvbox" id="cvbox"><div id="notice" hidden></div><canvas id="cv"></canvas><div id="lbls"></div>
-        <div id="legend" hidden><b id="lg-title">Length Fit</b><div class="bar" id="lg-bar"></div><div class="ends"><span id="lg-lo"></span><span id="lg-mid">Target</span><span id="lg-hi"></span></div></div>
+        <div id="legend" hidden><div class="t" id="lg-title">Length Fit</div><div class="barw"><div class="bar" id="lg-bar"></div><div class="tick"></div></div><div class="ends"><span id="lg-lo"></span><span id="lg-mid">Target</span><span id="lg-hi"></span></div></div>
       </div>
     </div>
   </div>
@@ -35,8 +35,9 @@
       <div class="opt mut small" id="srcnote">Fixture mode: the nearest stored configuration is played back.</div>
     </section>
     <section id="col-view"><h4>View</h4>
-      <div class="opt"><div class="optl">Cell Shading</div><div class="choice" id="shade"></div></div>
-      <div class="opt"><div class="optl">Overlay</div><div class="choice" id="overlay"></div></div>
+      <div class="opt"><div class="optl" title="How the 3D cells are drawn. Reflective: lit faces with a specular highlight. Plain: lit faces, no highlight. Wireframe: edges only; with an Overlay active each edge takes the average value of its adjacent faces.">Cell Shading</div><div class="choice" id="shade"></div></div>
+      <div class="opt"><div class="optl" title="Colour the 3D surface. Length Fit: how well the 3D edge lengths match the intrinsic metric (at the frame's own time). Gaussian Curvature: the curvature of the 3D surface against the target. Default: none.">Overlay</div><div class="choice" id="overlay"></div></div>
+      <div class="opt" id="sens" hidden><div class="optl" title="How much deviation from the target uses the full colour range. High: small deviations saturate. Low: only large deviations stand out.">Sensitivity</div><div class="choice" id="curvscale"></div></div>
     </section>
   </div>
   <div id="bottom"><div id="statusbar">

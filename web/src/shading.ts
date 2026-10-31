@@ -1,4 +1,8 @@
 // Port of viewer/frontend/shading.py: matplotlib Blues ramp + view-space light.
+import * as THREE from 'three';
+// Colours below are the page's final sRGB values; keep three.js from re-encoding them.
+THREE.ColorManagement.enabled = false;
+export const RAW_COLOR_SPACE = THREE.LinearSRGBColorSpace;
 const BLUES: number[][] = [
   [247,251,255],[241,247,253],[234,243,251],[228,239,249],[222,235,247],[216,231,245],[210,227,243],[204,223,241],
   [198,219,239],[188,215,235],[178,210,232],[168,206,228],[157,202,225],[145,195,222],[132,188,219],[119,181,217],
@@ -31,10 +35,17 @@ export function magma(t: number, out: number[] = [0, 0, 0]): number[] {
   return out;
 }
 
-/** Diverging blue - white - red, s in [-1, 1]. */
-export function diverge(s: number, out: number[] = [0, 0, 0]): number[] {
-  s = Math.max(-1, Math.min(1, s));
-  if (s < 0) { const k = 1 + s; out[0] = 0.1 + 0.85 * k; out[1] = 0.25 + 0.7 * k; out[2] = 1; }
-  else { out[0] = 1; out[1] = 0.95 - 0.8 * s; out[2] = 0.95 - 0.7 * s; }
+// flow_curvature.py: overlay colormap (DIVERGING_CMAP = "Picnic"), stops listed LOW -> HIGH, neutral white at the centre.
+export const PICNIC: number[][] = [[0,0,255],[51,153,255],[102,204,255],[153,204,255],[204,204,255],[255,255,255],[255,204,255],[255,153,255],[255,102,204],[255,51,153],[255,0,0]];
+export const PICNIC_CSS = 'linear-gradient(90deg,' + PICNIC.map(c => `rgb(${c.join(',')})`).join(',') + ')';
+export const OVERLAY_GREY = [120, 120, 120];
+/** 257-entry LUT (0..255 rgb) indexed by round(128 + 128 t), t in [-1,1]. */
+export const PICNIC_LUT: number[][] = (() => {
+  const out: number[][] = [], n = PICNIC.length - 1;
+  for (let i = 0; i <= 256; i++) {
+    const x = (i / 256) * n, j = Math.min(n - 1, Math.floor(x)), f = x - j, a = PICNIC[j], b = PICNIC[j + 1];
+    out.push([a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f]);
+  }
   return out;
-}
+})();
+export function pickLut(t: number): number[] { return Number.isNaN(t) ? OVERLAY_GREY : PICNIC_LUT[Math.round(128 + 128 * Math.max(-1, Math.min(1, t)))]; }

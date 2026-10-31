@@ -50,6 +50,8 @@ for (const name of names) {
       t: r(sc('t'), 9), faceSet: String(A.face_idx.data[k]),
       vertices: flat(sl('vertices3d', nv * 3), 5), u: flat(sl('u', nv), 6),
       K: flat(Array.from(sl('K_defect', nv), (d, i) => d / sl('A_vertex', nv)[i]), 5),
+      Kdef: flat(sl('K_defect', nv), 6), Avert: flat(sl('A_vertex', nv), 8),
+      cfW: A.cf_w ? flat(sl('cf_w', A.cf_w.shape[1] * A.cf_w.shape[2]), 4) : null,
       L: flat(sl('L', A.L.shape[1]), 6),
       gbError: sc('gb_resid'), lenRelRms: r(sc('len_rel_rms'), 8), lenRelMax: r(sc('len_rel_max'), 8),
       coneDefectErr: sc('cone_defect_err'), nDeep: sc('n_deep'), rho: r(sc('rho_frame'), 8),
@@ -61,6 +63,8 @@ for (const name of names) {
     embedNotice: fx.scalars.embed_notice ?? null, embedFailure: fx.scalars.embed_failure ?? null,
     coneIds: Array.from(A.cone_ids.data), sphereVertices: flat(A.sphere_vertices.data, 6),
     edges: Array.from(A.edges.data), faceSets, frames,
+    // smooth_w raster per frame (cf_w): ny rows over colatitude [0, pi], nx columns over longitude [-pi, pi]
+    cfGrid: A.cf_w ? { ny: A.cf_w.shape[1], nx: A.cf_w.shape[2], extent: [-Math.PI, Math.PI, 0, Math.PI] } : null,
   };
   writeFileSync(join(out, name + '.json'), JSON.stringify(doc));
   index.push({ name, n: m.request.n, betas: m.request.betas, seed: m.request.seed_surface, rho: fx.scalars.rho, quality: fx.scalars.quality.label });
