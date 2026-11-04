@@ -648,7 +648,7 @@ pub fn clean_start(rlz: &FastRealizer, src: &dyn FlowSource, f0: &[f64], nstep: 
 }
 
 /// `_cleaner(a, b)` is b?  (the less folded, then the clearly more accurate; a wins ties)
-fn cleaner_picks_b(rlz: &FastRealizer, a: &Realized, b: &Realized) -> bool {
+pub fn cleaner_picks_b(rlz: &FastRealizer, a: &Realized, b: &Realized) -> bool {
     if !b.ok {
         return false;
     }

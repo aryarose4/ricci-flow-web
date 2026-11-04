@@ -54,6 +54,17 @@ impl FlowSession {
     pub fn set_forward(&mut self, w_guard: f64, hybrid_rescue: usize) {
         self.s.cfg.anti.forward = Some(crate::realize::ForwardOpts { w_guard, hybrid_rescue, ..Default::default() });
     }
+    /// Fast Uniformizer: solve the uniformized metric directly (implicit Newton continuation from the
+    /// flat-cone far field) and realize only that one metric; the seed is ignored.  Call right after
+    /// construction.  Emits one frame.
+    pub fn set_fast(&mut self) {
+        self.s.set_fast();
+    }
+    /// Fast Uniformizer solve stats [continuation steps, Newton iterations, rejected steps, stationary
+    /// residual] (empty before the solve).
+    pub fn fast_stats(&self) -> Vec<f64> {
+        self.s.unif.as_ref().map_or(vec![], |u| vec![u.steps as f64, u.newton as f64, u.rejected as f64, u.resid])
+    }
     /// Hidden in-between metrics fitted so far (diagnostic).
     pub fn n_hidden(&self) -> usize {
         self.s.n_hidden

@@ -9,6 +9,8 @@ export interface FlowRequest {
   seed: SeedSurface;
   /** Mesh resolution level (WasmSolver). */
   level?: 'coarse' | 'medium' | 'fine' | 'extra';
+  /** 'fast' = Fast Uniformizer (direct solve of the uniformized metric, one frame); default True Ricci Flow. */
+  mode?: 'true_flow' | 'fast';
   /** FixtureSolver only: force a specific fixture name. */
   fixture?: string;
 }
@@ -62,6 +64,8 @@ export interface FlowFrame {
   /** rho < 0: banner text once the 3D shape could not follow (set from the failed frame on). */
   embedNotice?: string | null;
   progress: number;       // 0..1
+  /** Fast Uniformizer: [continuation steps, Newton iterations, rejected steps, stationary residual]. */
+  fastStats?: number[];
   /** Display only: a smooth-playback sub-frame. Overlays blend the two true frames' values instead of measuring the interpolated shape. */
   blend?: { a: FlowFrame; b: FlowFrame; s: number };
 }

@@ -19,5 +19,6 @@ pub mod seedmesh;
 pub mod tracker;
 pub mod truepoly;
 pub mod cfgrid;
+pub mod fastunif;
 pub mod pipeline;
 pub mod wasm;
