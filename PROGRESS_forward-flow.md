@@ -10,3 +10,4 @@
 - Measured (coarse, parallel runs, wall times inflated): c1 F w1e-2 0 deep, dent .031, Certified RF; F step .01 (max_sub 32) 0 deep, dent .013 (= backward BC .012) at ~2x wall; c2a F 0 deep Certified RF; c3b polytope F 0 deep Certified RF; true_polytope c1 F 0 deep, dent .014 vs backward BC .025 (forward better); c2b sharp F w1e-2 3 deep (backward 6 deep on 9 frames) -> still crumpled.
 - Hybrid FH (forward, then backward+rescue and per-frame cleaner merge) implemented; c1 coarse never triggered it (forward already clean). c2b FH run lost (killed by mistake).
 - Default w_guard -> 1e-2. Everything opt-in (`AntiCrumple.forward = None`); tests pass. Web not switched to forward (no wasm setter yet).
+- c1 MEDIUM forward (w1e-2): 0 deep on every frame; early dent max .018 at t .012 (backward BC: 2 deep at t .025, dent .047). See SUMMARY in report.
