@@ -427,6 +427,51 @@ pub trait FlowSource {
     }
 }
 
+/// (A) opt-in adaptive hidden intermediate metrics (lane anti-crumple).  Between consecutive output
+/// frames the chain inserts `ceil(dl / step_rel) - 1` hidden flow metrics (`dl` = max |log| edge-length
+/// ratio of the two frames), capped at `max_sub`; the port's fixed rule is step_rel 0.08, max_sub 4.
+/// `cheap`: hidden metrics are fitted with the short warm LM only (no polish / full fallback); the
+/// emitted frames are always fitted in full.
+#[derive(Clone, Debug)]
+pub struct Adaptive {
+    pub step_rel: f64,
+    pub max_sub: usize,
+    pub cheap: bool,
+}
+
+impl Default for Adaptive {
+    fn default() -> Self {
+        Adaptive { step_rel: 0.02, max_sub: 16, cheap: true }
+    }
+}
+
+/// (B) opt-in fading fold-angle prior (lane anti-crumple): the Fast LM adds
+/// `w(t) * sum_q (theta_q - theta_ref_q)^2` over the bending quads, theta_ref = the reference frame's
+/// angles (rho > 0: the realized final frame; rho < 0: the previous accepted frame).
+/// `w(t) = w0 * exp(-t / tau) * (1 - t / t_end)` (0 at and after t_end).  `hinge`: penalise only
+/// angles below min(theta_ref, 0) (convex -> reflex flips) instead of any deviation.
+#[derive(Clone, Debug)]
+pub struct FoldPrior {
+    pub w0: f64,
+    pub tau: f64,
+    pub hinge: bool,
+}
+
+impl Default for FoldPrior {
+    fn default() -> Self {
+        FoldPrior { w0: 3e-4, tau: 1.0, hinge: false }
+    }
+}
+
+impl FoldPrior {
+    pub fn weight(&self, t: f64, t_end: f64) -> f64 {
+        if !(t < t_end) {
+            return 0.0;
+        }
+        self.w0 * (-t / self.tau).exp() * (1.0 - t / t_end)
+    }
+}
+
 pub const COLD: [(f64, usize); 4] = [(1e-1, 6), (1e-2, 5), (1e-3, 4), (1e-4, 4)];
 pub const WARM: [(f64, usize); 2] = [(1e-3, 3), (1e-4, 3)];
 pub const POLISH: [(f64, usize); 2] = [(1e-5, 6), (1e-6, 6)];
@@ -490,6 +535,32 @@ impl FastRealizer {
             );
         }
         r
+    }
+
+    /// Hidden-metric fit (A, cheap): the short warm LM only, warm from `prev` (cold if prev is not ok).
+    pub fn realize_cheap(&self, l: &[f64], prev: &Realized) -> Realized {
+        if !prev.ok {
+            return self.realize(l, None);
+        }
+        let mut s = self.setup.borrow_mut();
+        let (x, info) = lm::fade_lm(&mut s, l, &prev.x, &WARM);
+        drop(s);
+        let x = geom::kabsch_align(&x, &prev.x);
+        let mut r = self.diag(x, "warm_cheap".into(), info.n_iter);
+        set_len(&mut r, &self.mesh.edges, l, self.len_tol);
+        r
+    }
+
+    /// (B) set the fold-angle prior reference from a realized shape (None = prior off).
+    pub fn set_prior_ref(&self, x: Option<&[V3]>, hinge: bool) {
+        let mut s = self.setup.borrow_mut();
+        s.prior = x.map(|x| lm::quad_angles(&s, x));
+        s.prior_hinge = hinge;
+    }
+
+    /// (B) prior weight of the next fits.
+    pub fn set_prior_w(&self, w: f64) {
+        self.setup.borrow_mut().prior_w = w;
     }
 
     fn diag(&self, x: Vec<V3>, start: String, iters: usize) -> Realized {
@@ -611,6 +682,19 @@ pub fn realize_backward(
 
 /// Steppable [`realize_backward`]: `new` fits the last frame, each `step` one earlier frame.
 pub struct Backward {
+    /// (A) adaptive hidden metrics (None = the port's rule 0.08 / 4)
+    pub adaptive: Option<Adaptive>,
+    /// (B) fold-angle prior (reference = realized final frame)
+    pub prior: Option<FoldPrior>,
+    /// hidden in-between metrics fitted so far
+    pub n_hidden: usize,
+    /// (B) requested but off: the final frame folded
+    pub prior_gated: bool,
+    /// (C) pending tail repair window (0 = none): see [`Backward::rescue_final`]
+    tail_repair: usize,
+    gated_prior: Option<FoldPrior>,
+    /// (C) the final frame was replaced (cold rescue or tail repair)
+    pub rescued: bool,
     n: usize,
     fwd: Vec<Option<Realized>>,
     out: Vec<Option<Realized>>,
@@ -638,7 +722,127 @@ impl Backward {
             }
         }
         out[n - 1] = Some(cur);
-        Backward { n, fwd, out, next: n.checked_sub(2), pending: None }
+        Backward { adaptive: None, prior: None, n_hidden: 0, prior_gated: false, tail_repair: 0, gated_prior: None, rescued: false, n, fwd, out, next: n.checked_sub(2), pending: None }
+    }
+
+    /// (C) opt-in final-frame rescue: when the cold fit of the uniformized end has deep folds (the
+    /// port has no BI convex anchor), cold-fit earlier frames n-2, n-3, .. (at most `max_back`) until
+    /// one is clean, chain it warm forward to the end, and keep the result if it is cleaner.
+    pub fn rescue_final(&mut self, rlz: &FastRealizer, frs: &[MetricFrame], max_back: usize) {
+        let n = self.n;
+        let cur = self.out[n - 1].clone().unwrap();
+        if cur.ok && deep(rlz, &cur) == 0 {
+            return;
+        }
+        let lo = n.saturating_sub(1 + max_back);
+        // 1) the last clean cold fit among the frames before the end
+        let mut base: Option<(usize, Realized)> = None;
+        for m in (lo..n - 1).rev() {
+            let c0 = rlz.realize(&frs[m].lengths, None);
+            if c0.ok && deep(rlz, &c0) == 0 {
+                base = Some((m, c0));
+                break;
+            }
+        }
+        // 2) else: tail repair once the backward chain itself reaches a clean frame (see `commit_at`)
+        if base.is_none() {
+            self.tail_repair = max_back;
+            return;
+        }
+        let Some((m, mut c)) = base else { return };
+        for fr in &frs[m + 1..] {
+            let r = rlz.realize(&fr.lengths, Some(&c));
+            if r.ok {
+                c = r;
+            }
+        }
+        if cleaner_picks_b(rlz, &cur, &c) {
+            c.start += "+rescued";
+            self.out[n - 1] = Some(c);
+            self.rescued = true;
+        }
+    }
+
+    /// Commit frame k; (C) tail repair: the first clean committed frame within the window re-fits the
+    /// later frames forward (warm) to the end, each kept where cleaner; a gated prior is then switched
+    /// on with the repaired end as reference.
+    fn commit_at(&mut self, rlz: &FastRealizer, frs: &[MetricFrame], k: usize, keep: Realized) -> bool {
+        let n = self.n;
+        if self.tail_repair > 0 && k + 1 + self.tail_repair >= n && keep.ok && deep(rlz, &keep) == 0 {
+            self.tail_repair = 0;
+            let mut c = keep.clone();
+            for j in k + 1..n {
+                let r = rlz.realize(&frs[j].lengths, Some(&c));
+                if !r.ok {
+                    break;
+                }
+                c = r;
+                let old = self.out[j].as_ref().unwrap();
+                if cleaner_picks_b(rlz, old, &c) || deep(rlz, old) > 0 {
+                    let mut r2 = c.clone();
+                    r2.start += "+tail";
+                    self.out[j] = Some(r2);
+                    if j == n - 1 {
+                        self.rescued = true;
+                    }
+                }
+            }
+            let last = self.out[n - 1].as_ref().unwrap();
+            if let Some(p) = self.gated_prior.take() {
+                if last.ok && deep(rlz, last) == 0 {
+                    rlz.set_prior_ref(Some(&last.x), p.hinge);
+                    self.prior = Some(p);
+                    self.prior_gated = false;
+                } else {
+                    self.gated_prior = Some(p);
+                }
+            }
+        } else if k + 1 + self.tail_repair < n {
+            self.tail_repair = 0;
+        }
+        self.commit(k, keep)
+    }
+
+    /// Opt-in options (call right after `new`); sets the prior reference to the final frame.
+    pub fn with_options(mut self, rlz: &FastRealizer, adaptive: Option<Adaptive>, prior: Option<FoldPrior>) -> Backward {
+        let mut prior = prior;
+        if let Some(p) = &prior {
+            let last = self.out[self.n - 1].as_ref().unwrap();
+            // gate: a folded (or unconverged) end is no reference (measured: it drags its folds back
+            // to early frames and costs ~1 % max length error); the prior is then off for this run
+            if !last.ok || deep(rlz, last) > 0 {
+                self.gated_prior = prior.take();
+                self.prior_gated = true;
+            } else {
+                rlz.set_prior_ref(Some(&last.x), p.hinge);
+            }
+        }
+        self.adaptive = adaptive;
+        self.prior = prior;
+        self
+    }
+
+    /// Emitted-frame fit; with the prior on, a fit that is not ok (len_rel_max >= 5 len_tol) is redone
+    /// without the prior, so the prior never breaks the warm chain.
+    fn fit(&self, rlz: &FastRealizer, l: &[f64], prev: Option<&Realized>) -> Realized {
+        let r = rlz.realize(l, prev);
+        if r.ok || self.prior.is_none() {
+            return r;
+        }
+        let w = rlz.setup.borrow().prior_w;
+        if w == 0.0 {
+            return r;
+        }
+        rlz.set_prior_w(0.0);
+        let r2 = rlz.realize(l, prev);
+        rlz.set_prior_w(w);
+        r2
+    }
+
+    fn set_w(&self, rlz: &FastRealizer, frs: &[MetricFrame], t: f64) {
+        if let Some(p) = &self.prior {
+            rlz.set_prior_w(p.weight(t, frs[self.n - 1].t));
+        }
     }
 
     /// Frames realized so far.
@@ -649,8 +853,17 @@ impl Backward {
     /// One unit of work: a backward fit of the next earlier frame (with its hidden substeps), or
     /// one fit of the lazily extended forward chain when that fit folded.  False when all are done.
     pub fn step(&mut self, rlz: &FastRealizer, src: &dyn FlowSource, frs: &[MetricFrame]) -> bool {
-        let (step_rel, max_sub) = (0.08, 4usize);
-        let Some(k) = self.next else { return false };
+        let (step_rel, max_sub, cheap) = match &self.adaptive {
+            Some(a) => (a.step_rel, a.max_sub, a.cheap),
+            None => (0.08, 4usize, false),
+        };
+        let Some(k) = self.next else {
+            if self.prior.is_some() {
+                rlz.set_prior_ref(None, false);
+                rlz.set_prior_w(0.0);
+            }
+            return false;
+        };
         let n = self.n;
         if self.pending.is_none() {
             let nf = &frs[k + 1];
@@ -660,14 +873,18 @@ impl Backward {
             let mut c = nx.clone();
             for j in (1..=nsub).rev() {
                 let t = frs[k].t + (nf.t - frs[k].t) * j as f64 / (nsub + 1) as f64;
-                let rm = rlz.realize(&src.between(&frs[k], t), Some(&c));
+                self.set_w(rlz, frs, t);
+                let lt = src.between(&frs[k], t);
+                let rm = if cheap { rlz.realize_cheap(&lt, &c) } else { rlz.realize(&lt, Some(&c)) };
+                self.n_hidden += 1;
                 if rm.ok {
                     c = rm;
                 }
             }
-            let rb = rlz.realize(&frs[k].lengths, Some(&c));
+            self.set_w(rlz, frs, frs[k].t);
+            let rb = self.fit(rlz, &frs[k].lengths, Some(&c));
             if rb.ok && deep(rlz, &rb) == 0 {
-                return self.commit(k, rb);
+                return self.commit_at(rlz, frs, k, rb);
             }
             self.pending = Some((rb, nx));
         }
@@ -675,7 +892,8 @@ impl Backward {
         let j = (0..n).filter(|&i| self.fwd[i].is_some()).max().unwrap();
         if j < k {
             let prev = self.fwd[j].as_ref().filter(|p| p.ok).cloned();
-            self.fwd[j + 1] = Some(rlz.realize(&frs[j + 1].lengths, prev.as_ref()));
+            self.set_w(rlz, frs, frs[j + 1].t);
+            self.fwd[j + 1] = Some(self.fit(rlz, &frs[j + 1].lengths, prev.as_ref()));
             if j + 1 < k {
                 return true;
             }
@@ -689,7 +907,7 @@ impl Backward {
         } else {
             rb
         };
-        self.commit(k, keep)
+        self.commit_at(rlz, frs, k, keep)
     }
 
     fn commit(&mut self, k: usize, keep: Realized) -> bool {
@@ -967,3 +1185,132 @@ pub fn polytope_vertices(mesh: &RealizeMesh, x: &[V3], corner_ids: &[usize], l: 
         faces: fp,
     })
 }
+
+// ------------------------------------------------------------------ forward (lane forward-flow)
+/// Opt-in FORWARD realization (lane forward-flow): march from the t = 0 seed shape to the end,
+/// warm, with hidden flow metrics every `step_rel` (max |log| edge-length ratio), at most `max_sub`
+/// per frame.  Where a warm fit folds (deep folds the previous shape did not have), it is retried
+/// with (i) a fold prior toward the previous shape (`w_guard`, hinge) and (ii) twice the substeps;
+/// the cleaner fit is kept.
+#[derive(Clone, Debug)]
+pub struct ForwardOpts {
+    pub step_rel: f64,
+    pub max_sub: usize,
+    pub w_guard: f64,
+    pub hinge: bool,
+    /// when some forward frame folds: also run the backward realization (with final rescue
+    /// `rescue_final`) and keep, per frame, the cleaner of the two (0 = off)
+    pub hybrid_rescue: usize,
+}
+
+impl Default for ForwardOpts {
+    fn default() -> Self {
+        ForwardOpts { step_rel: 0.04, max_sub: 8, w_guard: 1e-2, hinge: true, hybrid_rescue: 0 }
+    }
+}
+
+pub struct Forward {
+    pub opts: ForwardOpts,
+    pub n_hidden: usize,
+    pub n_guarded: usize,
+    out: Vec<Option<Realized>>,
+    next: usize,
+}
+
+impl Forward {
+    pub fn new(rlz: &FastRealizer, frs: &[MetricFrame], start: Option<Realized>, opts: ForwardOpts) -> Forward {
+        let mut out: Vec<Option<Realized>> = vec![None; frs.len()];
+        out[0] = Some(start.unwrap_or_else(|| rlz.realize(&frs[0].lengths, None)));
+        Forward { opts, n_hidden: 0, n_guarded: 0, out, next: 1 }
+    }
+
+    pub fn done(&self) -> usize {
+        self.next
+    }
+
+    /// chain prev -> frame k through `nsub` hidden metrics; prior weight `w` toward `prev` (0 = off)
+    fn chain(&mut self, rlz: &FastRealizer, src: &dyn FlowSource, frs: &[MetricFrame], k: usize, nsub: usize, w: f64) -> Realized {
+        let prev = self.out[k - 1].clone().unwrap();
+        if w > 0.0 {
+            rlz.set_prior_ref(Some(&prev.x), self.opts.hinge);
+        }
+        rlz.set_prior_w(w);
+        let mut c = prev.clone();
+        for j in 1..=nsub {
+            let t = frs[k - 1].t + (frs[k].t - frs[k - 1].t) * j as f64 / (nsub + 1) as f64;
+            let lt = src.between(&frs[k - 1], t);
+            let rm = rlz.realize(&lt, Some(&c));
+            self.n_hidden += 1;
+            if rm.ok {
+                c = rm;
+            }
+        }
+        let mut r = rlz.realize(&frs[k].lengths, Some(&c));
+        if w > 0.0 && !r.ok {
+            // the prior must never break the chain: re-fit the end without it
+            rlz.set_prior_w(0.0);
+            r = rlz.realize(&frs[k].lengths, Some(&c));
+        }
+        rlz.set_prior_w(0.0);
+        rlz.set_prior_ref(None, false);
+        r.x = geom::kabsch_align(&r.x, &prev.x);
+        r
+    }
+
+    /// Fit the next frame; false when all frames are done.
+    pub fn step(&mut self, rlz: &FastRealizer, src: &dyn FlowSource, frs: &[MetricFrame]) -> bool {
+        let k = self.next;
+        if k >= frs.len() {
+            return false;
+        }
+        let prev = self.out[k - 1].clone().unwrap();
+        let dl = frs[k - 1].lengths.iter().zip(&frs[k].lengths).map(|(a, b)| (b / a).ln().abs()).fold(0.0, f64::max);
+        let nsub = ((dl / self.opts.step_rel).ceil() as usize).min(self.opts.max_sub).max(1) - 1;
+        let mut r = self.chain(rlz, src, frs, k, nsub, 0.0);
+        let d0 = deep(rlz, &prev);
+        if !r.ok || deep(rlz, &r) > d0 {
+            self.n_guarded += 1;
+            if self.opts.w_guard > 0.0 {
+                let g = self.chain(rlz, src, frs, k, nsub, self.opts.w_guard);
+                if cleaner_picks_b(rlz, &r, &g) {
+                    r = g;
+                }
+            }
+            if !r.ok || deep(rlz, &r) > d0 {
+                let g = self.chain(rlz, src, frs, k, (2 * nsub + 1).min(4 * self.opts.max_sub), self.opts.w_guard);
+                if cleaner_picks_b(rlz, &r, &g) {
+                    r = g;
+                }
+            }
+            r.start += "+guard";
+        }
+        self.out[k] = Some(r);
+        self.next += 1;
+        self.next < frs.len()
+    }
+
+    pub fn finish(self) -> Vec<Realized> {
+        self.out.into_iter().map(|r| r.unwrap()).collect()
+    }
+}
+
+/// (F hybrid) per frame, the cleaner of the forward and backward realizations; a backward frame is
+/// rigidly aligned to the previous kept frame (clean convex realizations agree up to a rigid motion).
+pub fn merge_cleaner(rlz: &FastRealizer, fwd: Vec<Realized>, bwd: Vec<Realized>) -> (Vec<Realized>, usize) {
+    let mut out: Vec<Realized> = Vec::with_capacity(fwd.len());
+    let mut nb = 0;
+    for (f, b) in fwd.into_iter().zip(bwd) {
+        let mut keep = if cleaner_picks_b(rlz, &f, &b) && deep(rlz, &b) < deep(rlz, &f) { nb += 1; b } else { f };
+        if let Some(p) = out.last() {
+            keep.x = geom::kabsch_align(&keep.x, &p.x);
+        }
+        out.push(keep);
+    }
+    (out, nb)
+}
+
+/// any frame with deep folds
+pub fn any_deep(rlz: &FastRealizer, rs: &[Realized]) -> bool {
+    rs.iter().any(|r| deep(rlz, r) > 0)
+}
+

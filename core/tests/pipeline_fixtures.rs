@@ -25,7 +25,7 @@ pub fn config_of(fx: &Fixture) -> (SessionConfig, serde_json::Value) {
     let betas = req["betas"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
     let seed = Seed::parse(req["seed_surface"].as_str().unwrap()).unwrap();
     let level = page_level(req["resolution"].as_str().unwrap()).unwrap();
-    (SessionConfig { positions, betas, seed, level }, js)
+    (SessionConfig { positions, betas, seed, level, anti: Default::default() }, js)
 }
 
 fn check(name: &str) -> Vec<String> {
@@ -110,7 +110,7 @@ fn rho_neg_runs_and_flat_is_refused() {
     assert_eq!(got, want);
     assert_eq!(s.embed_notice().as_deref(), js["scalars"]["embed_notice"].as_str());
     // rho = 0 (sum of defects = 4 pi) is still refused
-    let flat = SessionConfig { positions: vec![[0.7, 0.0], [0.0, 0.7], [-0.7, 0.0], [0.0, -0.7]], betas: vec![0.5; 4], seed: Seed::Gluing, level: page_level("smoke").unwrap() };
+    let flat = SessionConfig { positions: vec![[0.7, 0.0], [0.0, 0.7], [-0.7, 0.0], [0.0, -0.7]], betas: vec![0.5; 4], seed: Seed::Gluing, level: page_level("smoke").unwrap(), anti: Default::default() };
     let e = Session::new(flat).err().expect("rho = 0 must be refused");
     assert!(e.contains("rho != 0"), "{e}");
 }
@@ -118,13 +118,13 @@ fn rho_neg_runs_and_flat_is_refused() {
 #[test]
 fn overlapping_caps_and_bad_beta() {
     // two close cones: caps get clamped, the session still runs to a quality label
-    let cfg = SessionConfig { positions: vec![[0.1, 0.0], [0.25, 0.0], [-0.8, 0.5]], betas: vec![0.5, 0.6, 0.7], seed: Seed::Smart, level: page_level("smoke").unwrap() };
+    let cfg = SessionConfig { positions: vec![[0.1, 0.0], [0.25, 0.0], [-0.8, 0.5]], betas: vec![0.5, 0.6, 0.7], seed: Seed::Smart, level: page_level("smoke").unwrap(), anti: Default::default() };
     let mut s = Session::new(cfg).unwrap();
     assert!(!s.flow_mesh.seed.overlaps.is_empty());
     let rows = s.run_all().unwrap();
     assert_eq!(rows.len(), 21);
     assert!(rows.iter().all(|r| r.gb_resid.abs() < 1e-12));
     eprintln!("overlap config: quality {:?}", s.quality.as_ref().unwrap().label);
-    let bad = SessionConfig { positions: vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]], betas: vec![1.2, 0.6, 0.7], seed: Seed::Smart, level: page_level("smoke").unwrap() };
+    let bad = SessionConfig { positions: vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]], betas: vec![1.2, 0.6, 0.7], seed: Seed::Smart, level: page_level("smoke").unwrap(), anti: Default::default() };
     assert!(Session::new(bad).is_err());
 }

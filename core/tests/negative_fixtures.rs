@@ -33,6 +33,7 @@ fn check(name: &str) -> Vec<String> {
         betas,
         seed: Seed::parse(req["seed_surface"].as_str().unwrap()).unwrap(),
         level: page_level(req["resolution"].as_str().unwrap()).unwrap(),
+        anti: Default::default(),
     };
     let fr = js["scalars"]["frames"].as_array().unwrap();
     let kd = fx.f64("K_defect").data;
