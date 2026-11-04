@@ -3,3 +3,7 @@ node_modules/
 web/dist/
 core/pkg/
 .worktrees/
+bin/
+core/target_b/
+artifacts/anti-crumple/runs/
+artifacts/anti-crumple/final/*.json

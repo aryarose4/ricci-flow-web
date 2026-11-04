@@ -30,8 +30,29 @@ impl FlowSession {
             return Err(JsValue::from_str("positions must hold 2 numbers per beta"));
         }
         let positions = positions.chunks(2).map(|c| [c[0], c[1]]).collect();
-        let s = Session::new(SessionConfig { positions, betas: betas.to_vec(), seed, level }).map_err(|e| JsValue::from_str(&e))?;
+        let s = Session::new(SessionConfig { positions, betas: betas.to_vec(), seed, level, anti: Default::default() }).map_err(|e| JsValue::from_str(&e))?;
         Ok(FlowSession { s })
+    }
+    /// Opt-in (A) adaptive hidden metrics between output frames: at most `max_sub` hidden flow metrics
+    /// so that the max |log| edge-length change per step is <= `step_rel`; `cheap` = short warm LM for the
+    /// hidden ones.  Call right after construction (before the first chunk).  Defaults: 0.02, 16, true.
+    pub fn set_adaptive(&mut self, step_rel: f64, max_sub: usize, cheap: bool) {
+        self.s.cfg.anti.adaptive = Some(crate::realize::Adaptive { step_rel, max_sub, cheap });
+    }
+    /// Opt-in (B) fading fold-angle prior, weight `w0 exp(-t/tau) (1 - t/t_end)` toward the final frame's
+    /// bending angles (rho < 0: the previous accepted frame's); off if the final frame folded.
+    /// `hinge`: only penalise angles below min(ref, 0).  Call right after construction.  Defaults: 3e-4, 1, false.
+    pub fn set_fold_prior(&mut self, w0: f64, tau: f64, hinge: bool) {
+        self.s.cfg.anti.prior = Some(crate::realize::FoldPrior { w0, tau, hinge });
+    }
+    /// Opt-in (C) rho > 0: if the uniformized end folds, re-fit it from the last clean cold fit among the
+    /// `max_back` frames before it (0 = off; suggested 4).  Call right after construction.
+    pub fn set_rescue_final(&mut self, max_back: usize) {
+        self.s.cfg.anti.rescue_final = max_back;
+    }
+    /// Hidden in-between metrics fitted so far (diagnostic).
+    pub fn n_hidden(&self) -> usize {
+        self.s.n_hidden
     }
     /// One work chunk; returns the next frame once realization is done, else undefined.
     pub fn next_frame(&mut self) -> Result<Option<FlowFrame>, JsValue> {

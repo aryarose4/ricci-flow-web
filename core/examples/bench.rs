@@ -14,6 +14,7 @@ fn main() {
             betas: r["betas"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect(),
             seed: Seed::parse(r["seed_surface"].as_str().unwrap()).unwrap(),
             level: page_level(&std::env::var("BENCH_LEVEL").unwrap_or(r["resolution"].as_str().unwrap().to_string())).unwrap(),
+            anti: Default::default(),
         };
         let t0 = Instant::now();
         let mut s = Session::new(cfg).unwrap();
