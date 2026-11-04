@@ -16,6 +16,7 @@ pub mod lm;
 pub mod quality;
 pub mod realize;
 pub mod seedmesh;
+pub mod tracker;
 pub mod cfgrid;
 pub mod pipeline;
 pub mod wasm;

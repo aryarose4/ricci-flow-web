@@ -98,11 +98,21 @@ fn pipeline_rho_pos_fixtures() {
 }
 
 #[test]
-fn rho_neg_is_refused() {
+fn rho_neg_runs_and_flat_is_refused() {
+    // rho < 0 now runs the forward-tracking path (lane negative-flow); the smoke-level golden's
+    // embed_state sequence must match exactly (full checks: tests/negative_fixtures.rs)
     let fx = Fixture::open("n4_neg_gluing");
-    let (cfg, _) = config_of(&fx);
-    let e = Session::new(cfg).err().expect("rho<0 must be refused");
-    assert!(e.contains("rho > 0"), "{e}");
+    let (cfg, js) = config_of(&fx);
+    let mut s = Session::new(cfg).expect("rho<0 runs");
+    let rows = s.run_all().unwrap();
+    let want: Vec<&str> = js["scalars"]["frames"].as_array().unwrap().iter().map(|f| f["embed_state"].as_str().unwrap()).collect();
+    let got: Vec<&str> = rows.iter().map(|r| r.embed_state.as_str()).collect();
+    assert_eq!(got, want);
+    assert_eq!(s.embed_notice().as_deref(), js["scalars"]["embed_notice"].as_str());
+    // rho = 0 (sum of defects = 4 pi) is still refused
+    let flat = SessionConfig { positions: vec![[0.7, 0.0], [0.0, 0.7], [-0.7, 0.0], [0.0, -0.7]], betas: vec![0.5; 4], seed: Seed::Gluing, level: page_level("smoke").unwrap() };
+    let e = Session::new(flat).err().expect("rho = 0 must be refused");
+    assert!(e.contains("rho != 0"), "{e}");
 }
 
 #[test]
