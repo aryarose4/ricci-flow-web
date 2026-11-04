@@ -4,6 +4,8 @@
 // is untouched. Same constants as Python.
 
 export const TARGET = 0.004, MAXSUB = 40, TICK_MS = 60;
+/** tangent cap vs the smaller neighbouring step (3 = Fritsch-Carlson bound; lower = less overshoot) */
+export const TANG_LIM = 1.5;
 
 type V3 = number[];
 type M3 = number[][];
@@ -100,7 +102,7 @@ function tang(d1: Float64Array, d2: Float64Array, h1: number, h2: number, m: num
   for (const [dim, cnt, o] of groups) for (let a = 0; a < cnt; a++) {
     const b = o + a * dim; let dot = 0, n1 = 0, n2 = 0, nm = 0;
     for (let k = 0; k < dim; k++) { mm[k] = (h2 * d1[b + k] + h1 * d2[b + k]) / (h1 + h2); dot += d1[b + k] * d2[b + k]; n1 += d1[b + k] ** 2; n2 += d2[b + k] ** 2; nm += mm[k] ** 2; }
-    let sc = 0; if (dot > 0) sc = Math.min(1, 3 * Math.sqrt(Math.min(n1, n2)) / Math.max(Math.sqrt(nm), 1e-300));
+    let sc = 0; if (dot > 0) sc = Math.min(1, TANG_LIM * Math.sqrt(Math.min(n1, n2)) / Math.max(Math.sqrt(nm), 1e-300));
     for (let k = 0; k < dim; k++) out[b + k] = mm[k] * sc;
   }
   return out;
@@ -110,7 +112,9 @@ const slope = (y1: Float64Array, y0: Float64Array, h: number) => { const o = new
 function seg(P: PFrame | null, Af: PFrame, Bf: PFrame, Nf: PFrame | null): Plan {
   const A = Af.V, B = Bf.V, pa = prep(A, Bf), m = A.length, n = pa.n, ca = pa.ca, cb = pa.cb, R = pa.R, S: Cloud = new Array(m);
   for (let i = 0; i < m; i++) S[i] = [A[i][0] - ca[0], A[i][1] - ca[1], A[i][2] - ca[2]];
-  const qI = [1, 0, 0, 0], qB = qsign(quat(R), qI), yA = knot(S, qI, ca), yB = knot(pa.Bp, qB, cb), dA = slope(yB, yA, n);
+  // every true frame gets equal wall time, so use uniform knot spacing (h = 1): jump-based spacing made the speed
+  // jump at knots and the curve wiggle around small changes next to big ones
+  const qI = [1, 0, 0, 0], qB = qsign(quat(R), qI), yA = knot(S, qI, ca), yB = knot(pa.Bp, qB, cb), dA = slope(yB, yA, 1);
   let m0 = new Float64Array(yA.length), m1 = new Float64Array(yA.length);
   if (P) {
     const p1 = prep(P.V, Af), R1 = p1.R, cp = p1.ca, Pt: Cloud = new Array(m);
@@ -120,7 +124,7 @@ function seg(P: PFrame | null, Af: PFrame, Bf: PFrame, Nf: PFrame | null): Plan 
     }
     const R1T: M3 = [[R1[0][0], R1[1][0], R1[2][0]], [R1[0][1], R1[1][1], R1[2][1]], [R1[0][2], R1[1][2], R1[2][2]]];
     const yP = knot(Pt, qsign(quat(R1T), qI), cp);
-    m0 = tang(slope(yA, yP, p1.n), dA, p1.n, n, m);
+    m0 = tang(slope(yA, yP, 1), dA, 1, 1, m);
   }
   if (Nf) {
     const p2 = prep(B, Nf), R2 = p2.R, Nt: Cloud = new Array(m);
@@ -131,13 +135,13 @@ function seg(P: PFrame | null, Af: PFrame, Bf: PFrame, Nf: PFrame | null): Plan 
     const RR: M3 = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
     for (let r = 0; r < 3; r++) for (let c = 0; c < 3; c++) for (let k = 0; k < 3; k++) RR[r][c] += R2[r][k] * R[k][c];
     const yN = knot(Nt, qsign(quat(RR), qB), p2.cb);
-    m1 = tang(dA, slope(yN, yB, p2.n), n, p2.n, m);
+    m1 = tang(dA, slope(yN, yB, 1), 1, 1, m);
   }
   return { n, m, yA, yB, m0, m1 };
 }
 function segEval(s: Plan, t: number): Cloud {
-  const n = s.n, m = s.m, t2 = t * t, t3 = t2 * t, h00 = 2 * t3 - 3 * t2 + 1, h10 = t3 - 2 * t2 + t, h01 = -2 * t3 + 3 * t2, h11 = t3 - t2, L = s.yA.length, y = new Float64Array(L);
-  for (let i = 0; i < L; i++) y[i] = h00 * s.yA[i] + h10 * n * s.m0[i] + h01 * s.yB[i] + h11 * n * s.m1[i];
+  const m = s.m, t2 = t * t, t3 = t2 * t, h00 = 2 * t3 - 3 * t2 + 1, h10 = t3 - 2 * t2 + t, h01 = -2 * t3 + 3 * t2, h11 = t3 - t2, L = s.yA.length, y = new Float64Array(L);
+  for (let i = 0; i < L; i++) y[i] = h00 * s.yA[i] + h10 * s.m0[i] + h01 * s.yB[i] + h11 * s.m1[i];
   const Q = qmat([y[3 * m], y[3 * m + 1], y[3 * m + 2], y[3 * m + 3]]), cx = y[3 * m + 4], cy = y[3 * m + 5], cz = y[3 * m + 6], out: Cloud = new Array(m);
   for (let i = 0; i < m; i++) {
     const x = y[3 * i], yy = y[3 * i + 1], z = y[3 * i + 2];
@@ -149,7 +153,7 @@ function segEval(s: Plan, t: number): Cloud {
 /** Wall-clock player. Every TRUE-frame transition lasts FRAME_MS whether smooth is on or off (live backlog excepted); smooth only
  *  adds intermediate frames, whose number is capped by what the measured display cost allows, and which are skipped (never stretched)
  *  when a render is late. Driven by requestAnimationFrame, position = elapsed / FRAME_MS. */
-export const FRAME_MS = 450, LIVE_MS = 220, BACKLOG_MS = 60, COST_SAFETY = 1.6, MIN_STEP_MS = 16;
+export const FRAME_MS = 300, LIVE_MS = 220, BACKLOG_MS = 60, COST_SAFETY = 1.6, MIN_STEP_MS = 16;
 interface Seg { A: PFrame; B: PFrame; t0: number; dur: number; n: number; pl: Plan | null; shown: number }
 export interface PlayStats { planMs: number[]; dispSub: number[]; dispTrue: number[]; nEval: number[] }
 
