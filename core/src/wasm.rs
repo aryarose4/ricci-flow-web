@@ -24,13 +24,21 @@ pub struct FlowSession {
 impl FlowSession {
     #[wasm_bindgen(constructor)]
     pub fn new(positions: &[f64], betas: &[f64], seed: &str, level: &str) -> Result<FlowSession, JsValue> {
+        Self::make(positions, betas, seed, level, false)
+    }
+    /// Cheap session for slider / drag previews (True Polytope skips its conformal coordinates).
+    pub fn preview(positions: &[f64], betas: &[f64], seed: &str, level: &str) -> Result<FlowSession, JsValue> {
+        Self::make(positions, betas, seed, level, true)
+    }
+    fn make(positions: &[f64], betas: &[f64], seed: &str, level: &str, preview: bool) -> Result<FlowSession, JsValue> {
         let seed = Seed::parse(seed).ok_or_else(|| JsValue::from_str("seed must be gluing | smart | polytope | true_polytope"))?;
         let level = page_level(level).ok_or_else(|| JsValue::from_str("unknown mesh level"))?;
         if positions.len() != 2 * betas.len() {
             return Err(JsValue::from_str("positions must hold 2 numbers per beta"));
         }
         let positions = positions.chunks(2).map(|c| [c[0], c[1]]).collect();
-        let s = Session::new(SessionConfig { positions, betas: betas.to_vec(), seed, level, anti: Default::default() }).map_err(|e| JsValue::from_str(&e))?;
+        let cfg = SessionConfig { positions, betas: betas.to_vec(), seed, level, anti: Default::default() };
+        let s = if preview { Session::new_preview(cfg) } else { Session::new(cfg) }.map_err(|e| JsValue::from_str(&e))?;
         Ok(FlowSession { s })
     }
     /// Opt-in (A) adaptive hidden metrics between output frames: at most `max_sub` hidden flow metrics

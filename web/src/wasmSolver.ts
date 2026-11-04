@@ -7,7 +7,8 @@ let ready: Promise<unknown> | null = null;
 export async function previewOf(req: FlowRequest): Promise<PreviewData> {
   await (ready ??= init());
   const t0 = performance.now();
-  const s = new FlowSession(new Float64Array(req.positions.flat()), new Float64Array(req.betas), req.seed, req.level ?? 'coarse');
+  // preview constructor: True Polytope skips its conformal map + cone match (only Run pays for it)
+  const s = FlowSession.preview(new Float64Array(req.positions.flat()), new Float64Array(req.betas), req.seed, req.level ?? 'coarse');
   try {
     return {
       vertices: Float32Array.from(s.preview_vertices()), faces: s.faces(), edges: s.edges(), coneIds: Array.from(s.cones()),

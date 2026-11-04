@@ -220,6 +220,15 @@ fn rms(v: &[f64]) -> f64 {
 
 impl Session {
     pub fn new(cfg: SessionConfig) -> Result<Session, String> {
+        Self::new_with(cfg, false)
+    }
+
+    /// Cheap session for slider / drag previews: True Polytope skips its conformal coordinates.
+    pub fn new_preview(cfg: SessionConfig) -> Result<Session, String> {
+        Self::new_with(cfg, true)
+    }
+
+    fn new_with(cfg: SessionConfig, preview: bool) -> Result<Session, String> {
         let n = cfg.positions.len();
         if n != cfg.betas.len() || n == 0 {
             return Err("need one beta per cone position".into());
@@ -234,7 +243,8 @@ impl Session {
             if neg {
                 return Err("True Polytope needs rho > 0 (cone angles summing to a convex polytope)".into());
             }
-            Some(crate::truepoly::build(&cfg.positions, &cfg.betas, cfg.level).map_err(|e| format!("mesh failed: {e}"))?)
+            let b = if preview { crate::truepoly::build_preview } else { crate::truepoly::build };
+            Some(b(&cfg.positions, &cfg.betas, cfg.level).map_err(|e| format!("mesh failed: {e}"))?)
         } else {
             None
         };
@@ -275,7 +285,7 @@ impl Session {
             quality: None,
             cf_main: None,
             cf_poly: None,
-            warning: None,
+            warning: true_poly.as_ref().and_then(|t| t.warning.clone()),
             neg,
             tracker: None,
             prev: None,
