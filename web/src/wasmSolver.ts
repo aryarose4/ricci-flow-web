@@ -27,6 +27,7 @@ export class WasmSolver implements Solver {
     // anti-crumple defaults (lane anti-crumple): rescue a folded final frame and a light fold prior; rho > 0 only
     if (req.mode === 'fast') s.set_fast();
     else if (2 - req.betas.reduce((a, b) => a + (1 - b), 0) > 0) { s.set_rescue_final(4); s.set_fold_prior(3e-4, 1.0, false); s.set_forward(1e-2, 4); }
+    else s.set_forward(1e-2, 0); // rho < 0 (lane neg-forward): guarded fold-free march, honest growing length error
     try {
       const faces = s.faces();
       let sent = false, faces0: Uint32Array | null = null;
