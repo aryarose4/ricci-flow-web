@@ -51,3 +51,21 @@ Honest caveats:
 ## Checks
 cargo test --release: all pass. web `npm run build` (tsc + vite): pass. Browser (port 4396):
 n5 TP "Certified Ricci Flow", rho 0.15090.
+
+## Follow-up (verifier pass_with_caveats → merge blocker fixed)
+- Merged main 49ef3d3 (clean).
+- Preview path: `truepoly::build_preview` (radial, no conformal map / match loop) via
+  `Session::new_preview` and wasm `FlowSession.preview(...)`; `previewOf` in web/src/wasmSolver.ts
+  uses it. Only Run pays for the conformal build. Browser (port 4396, coarse, setConfig + 4 drag
+  steps, `scripts/tp-preview.mjs`): TP n4 7–14 ms, n5 10–23 ms; gluing n4 16–66 ms, n5 22–43 ms.
+- Full build speed: warm-starting uniformize from the radial fit was tried (dt0 = 1) — 7 vs 8
+  steps and the next iteration failed to converge → reverted. Instead MATCH_ITERS 12 → 8 and stall
+  stop at <15% gain. Coarse build: n4 1.6 s, n5 2.1 s, n3 0.2 s, n8 1.5 s (was 1.9/3.4/0.2/2.8).
+  Cost: n5 match err 1.7e-3 → 2.7e-3, dist gap vs gluing 0.0029 → 0.0044 (still 3× better than main).
+- Fallback: conformalize rejects non-finite layout, |ad−bc| ≤ 1e-8, any flipped sphere face, or
+  non-finite u_off; on failure at the first iteration the radial build is returned with
+  `TruePoly.warning` → `Session.warning` (surfaced by wasm `warning()`); on a later iteration the
+  best conformal iterate is kept. Session::new no longer errors on a conformal-map failure.
+- New test `conformal_vs_preview`. cargo test --release all pass; tsc + vite pass; browser full
+  run n5 TP Certified, rho 0.15090.
+- Medium n5 full build 11.7 → 7.6 s; match err 2.0e-3, dist gap 0.0018, fit resid 2.35e-4.

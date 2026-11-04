@@ -4,7 +4,14 @@
   "branch": "lane/tp-conformal",
   "harness": "claude",
   "status": "candidate — pending user verification",
-  "owns": ["core/src/truepoly.rs", "core/examples/tp_conf.rs", "core/examples/cf_rough.rs", "web/scripts/tp-shot.mjs", "web/review/tp_cf_*.png", "PROGRESS_tp-conformal.md"],
+  "owns": [
+    "core/src/truepoly.rs",
+    "core/examples/tp_conf.rs",
+    "core/examples/cf_rough.rs",
+    "web/scripts/tp-shot.mjs",
+    "web/review/tp_cf_*.png",
+    "PROGRESS_tp-conformal.md"
+  ],
   "headline": "True Polytope mesh.y = discrete-conformal coordinates of the polytope metric (no-cone uniformize + sphere layout + Möbius fit); polytope cone directions iterated so conformal cone positions match the user's. u_off fit residual 0.20 -> 9e-4 (n5 coarse); plotted roughness 4.4e-2 -> 1.6e-2; final dist-ratio gap vs gluing 0.0146 -> 0.0029.",
   "acceptance": {
     "cargo_test_release": "pass (incl. page_default_polytope crease test)",
@@ -13,16 +20,155 @@
     "measure": "cargo run --release --example tp_conf -- coarse"
   },
   "metrics": {
-    "n4":   {"fit_resid": [0.120, 1.04e-3], "rough": [4.74e-2, 1.85e-2], "match_err": 4.3e-4, "dist_gap": [0.0128, 0.0096], "build_s": [0.01, 1.9]},
-    "n5":   {"fit_resid": [0.198, 9.1e-4], "rough": [4.44e-2, 1.60e-2], "match_err": 1.7e-3, "dist_gap": [0.0146, 0.0029], "build_s": [0.01, 3.4]},
-    "n3_close": {"fit_resid": [0.127, 8.3e-4], "rough": [6.16e-2, 1.54e-2], "match_err": 1e-16, "dist_gap": [0.0508, 0.0508], "build_s": [0.01, 0.2]},
-    "n8_cube": {"fit_resid": [0.0613, 7.3e-4], "rough": [3.46e-2, 6.7e-3], "match_err": 3.4e-7, "dist_gap": [0.0108, 0.0014], "build_s": [0.01, 2.8]},
-    "n5_medium": {"fit_resid": [0.197, 2.3e-4], "rough": [3.46e-2, 8.3e-3], "match_err": 4.5e-4, "dist_gap": [0.0135, 0.0017], "build_s": [0.02, 11.7]}
+    "n4": {
+      "fit_resid": [
+        0.12,
+        0.00104
+      ],
+      "rough": [
+        0.0474,
+        0.0185
+      ],
+      "match_err": 0.00043,
+      "dist_gap": [
+        0.0128,
+        0.0096
+      ],
+      "build_s": [
+        0.01,
+        1.9
+      ]
+    },
+    "n5": {
+      "fit_resid": [
+        0.198,
+        0.00091
+      ],
+      "rough": [
+        0.0444,
+        0.016
+      ],
+      "match_err": 0.0017,
+      "dist_gap": [
+        0.0146,
+        0.0029
+      ],
+      "build_s": [
+        0.01,
+        3.4
+      ]
+    },
+    "n3_close": {
+      "fit_resid": [
+        0.127,
+        0.00083
+      ],
+      "rough": [
+        0.0616,
+        0.0154
+      ],
+      "match_err": 1e-16,
+      "dist_gap": [
+        0.0508,
+        0.0508
+      ],
+      "build_s": [
+        0.01,
+        0.2
+      ]
+    },
+    "n8_cube": {
+      "fit_resid": [
+        0.0613,
+        0.00073
+      ],
+      "rough": [
+        0.0346,
+        0.0067
+      ],
+      "match_err": 3.4e-07,
+      "dist_gap": [
+        0.0108,
+        0.0014
+      ],
+      "build_s": [
+        0.01,
+        2.8
+      ]
+    },
+    "n5_medium": {
+      "fit_resid": [
+        0.197,
+        0.00023
+      ],
+      "rough": [
+        0.0346,
+        0.0083
+      ],
+      "match_err": 0.00045,
+      "dist_gap": [
+        0.0135,
+        0.0017
+      ],
+      "build_s": [
+        0.02,
+        11.7
+      ]
+    }
   },
   "caveats": [
     "B fixed point is linear (~0.7/step) and stalls at a ~1e-3 re-meshing noise floor; over-relaxation 2.0 diverged",
     "n3 close pair 5% gap vs gluing unchanged: coarse discretization, not conformal position (3 points are Möbius-exact)",
     "extra blocking build time 0.2-3.4 s coarse, ~12 s medium"
   ],
-  "artifacts": ["web/review/tp_cf_before_disc.png", "web/review/tp_cf_after_disc.png", "web/review/tp_cf_gluing_disc.png"]
+  "artifacts": [
+    "web/review/tp_cf_before_disc.png",
+    "web/review/tp_cf_after_disc.png",
+    "web/review/tp_cf_gluing_disc.png"
+  ],
+  "followup": {
+    "merged_main": "49ef3d3",
+    "preview_ms_browser_coarse": {
+      "true_polytope_n4": [
+        11,
+        13,
+        13,
+        14,
+        7
+      ],
+      "true_polytope_n5": [
+        10,
+        18,
+        17,
+        23,
+        10
+      ],
+      "gluing_n4": [
+        66,
+        30,
+        28,
+        34,
+        16
+      ],
+      "gluing_n5": [
+        22,
+        37,
+        43,
+        36,
+        23
+      ]
+    },
+    "full_build_s_coarse": {
+      "n4": 1.64,
+      "n5": 2.06,
+      "n3_close": 0.19,
+      "n8_cube": 1.51
+    },
+    "full_build_s_medium": {
+      "n5": 7.56
+    },
+    "accuracy_tradeoff": "MATCH_ITERS 12->8: n5 match err 2.7e-3, dist gap 0.0044 (main 0.0146)",
+    "warm_start": "tried (uniformize from -u_off_radial, dt0=1): 7 vs 8 steps then non-convergence; reverted",
+    "fallback": "radial + LS u_off with Session.warning on non-finite / det<=1e-8 / flipped faces / uniformize failure"
+  }
 }

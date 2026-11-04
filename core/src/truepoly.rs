@@ -46,6 +46,8 @@ pub struct TruePoly {
     /// max chordal distance between the cones' conformal positions and the user's positions
     pub match_err: f64,
     pub match_iters: usize,
+    /// set when the conformal coordinates failed and radial positions are used instead
+    pub warning: Option<String>,
 }
 
 fn hull_defects(pts: &[V3]) -> Option<(Vec<f64>, crate::hull::Hull)> {
@@ -210,16 +212,29 @@ fn hash01(i: usize, s: u64) -> f64 {
 /// the sphere, Möbius-normalised) so that the CONFORMAL positions of its cones -- not their
 /// radial projections -- equal the user's positions; `mesh.y` holds those conformal coordinates.
 pub fn build(positions: &[[f64; 2]], betas: &[f64], level: (usize, usize, usize)) -> Result<TruePoly, String> {
-    build_opts(positions, betas, level, MATCH_ITERS)
+    build_opts(positions, betas, level, MATCH_ITERS, true)
+}
+
+/// Cheap preview build (slider / drag): radial sphere positions, no conformal map, no match loop.
+pub fn build_preview(positions: &[[f64; 2]], betas: &[f64], level: (usize, usize, usize)) -> Result<TruePoly, String> {
+    build_opts(positions, betas, level, 0, false)
 }
 
 /// max fixed-point iterations of the cone-position match (0 = conformal coordinates only)
-pub const MATCH_ITERS: usize = 12;
+pub const MATCH_ITERS: usize = 8;
 const MATCH_TOL: f64 = 1e-6;
 /// fixed-point relaxation (contracts at ~0.7 per step; 2.0 was measured to diverge)
 const MATCH_RELAX: f64 = 1.0;
 
-pub fn build_opts(positions: &[[f64; 2]], betas: &[f64], level: (usize, usize, usize), iters: usize) -> Result<TruePoly, String> {
+/// `conformal = false`: radial positions + least-squares `u_off` (the pre-conformal behaviour).
+/// If the conformal map fails or is degenerate, falls back to that with `warning` set.
+pub fn build_opts(
+    positions: &[[f64; 2]],
+    betas: &[f64],
+    level: (usize, usize, usize),
+    iters: usize,
+    conformal: bool,
+) -> Result<TruePoly, String> {
     let n = positions.len();
     let target = seedmesh::stereographic_to_sphere(positions);
     // same vertex budget as the sphere solver mesh of this page level
@@ -228,17 +243,30 @@ pub fn build_opts(positions: &[[f64; 2]], betas: &[f64], level: (usize, usize, u
         Err(_) => (level.0 + n * level.1 * level.2.max(1)) as f64,
     };
     let mut p = target.clone();
+    if !conformal {
+        return build_raw(&p, betas, target_nv);
+    }
     let mut best: Option<(f64, TruePoly)> = None;
     for it in 0..=iters {
         let mut tp = build_raw(&p, betas, target_nv)?;
-        conformalize(&mut tp, &target)?;
+        if let Err(e) = conformalize(&mut tp, &target) {
+            match best {
+                // keep the best conformal iterate found so far
+                Some(_) => break,
+                None => {
+                    // radial p = target here, so the radial build is the pre-conformal seed
+                    tp.warning = Some(format!("True Polytope: conformal coordinates unavailable ({e}); using radial positions"));
+                    return Ok(tp);
+                }
+            }
+        }
         let q: Vec<V3> = tp.mesh.cones.iter().map(|&c| tp.mesh.y[c]).collect();
         let err = q.iter().zip(&target).map(|(a, b)| geom::norm(geom::sub(*a, *b))).fold(0.0, f64::max);
         tp.match_err = err;
         tp.match_iters = it;
         // stop at the tolerance, the iteration cap, or once the error stalls at the mesh
         // re-generation noise floor (the facet meshes change with p)
-        let stalled = best.as_ref().map_or(false, |(e, _)| err > 0.9 * *e && err < 1e-2);
+        let stalled = best.as_ref().map_or(false, |(e, _)| err > 0.85 * *e && err < 1e-2);
         let done = err < MATCH_TOL || it == iters || stalled;
         if best.as_ref().map_or(true, |(e, _)| err < *e) {
             best = Some((err, tp));
@@ -271,9 +299,28 @@ fn conformalize(tp: &mut TruePoly, target: &[V3]) -> Result<(), String> {
     let cones = tp.mesh.cones.clone();
     let src: Vec<V3> = cones.iter().map(|&c| y[c]).collect();
     let mob = fit_mobius(&src, target);
+    let det = cadd(cmul(mob[0], mob[3]), cmul([-mob[1][0], -mob[1][1]], mob[2]));
+    if !(det[0].hypot(det[1]) > 1e-8) || mob.iter().any(|c| !c[0].is_finite() || !c[1].is_finite()) {
+        return Err("degenerate Möbius normalisation".into());
+    }
     let y: Vec<V3> = y.iter().map(|q| mobius_apply(&mob, *q)).collect();
+    if y.iter().any(|q| !q.iter().all(|c| c.is_finite())) {
+        return Err("non-finite sphere layout".into());
+    }
+    // every face must stay positively oriented (outward) on the sphere
+    let flipped = tp.mesh.f.iter().filter(|t| {
+        let (a, b, c) = (y[t[0]], y[t[1]], y[t[2]]);
+        geom::dot(geom::add(geom::add(a, b), c), geom::cross(geom::sub(b, a), geom::sub(c, a))) <= 0.0
+    }).count();
+    if flipped > 0 {
+        return Err(format!("sphere layout flipped {flipped} faces"));
+    }
     let mesh = Mesh::from_parts(y, tp.mesh.f.clone(), cones);
-    tp.u_off = fit_offset(&mesh, &tp.l0)?;
+    let u_off = fit_offset(&mesh, &tp.l0)?;
+    if u_off.iter().any(|x| !x.is_finite()) {
+        return Err("non-finite conformal offset".into());
+    }
+    tp.u_off = u_off;
     let ch = mesh.chord_lengths();
     let res: Vec<f64> =
         mesh.e.iter().enumerate().map(|(k, &[i, j])| (tp.l0[k] / ch[k]).ln() - 0.5 * (tp.u_off[i] + tp.u_off[j])).collect();
@@ -631,7 +678,7 @@ fn build_raw(p: &[V3], betas: &[f64], target_nv: f64) -> Result<TruePoly, String
         .flat_map(|ids| ids.windows(2).map(|w| (w[0].min(w[1]), w[0].max(w[1]))).collect::<Vec<_>>())
         .collect();
     let crease_edges: Vec<usize> = (0..ne).filter(|&k| crease.contains(&(mesh.e[k][0], mesh.e[k][1]))).collect();
-    let u_off = vec![0.0; mesh.nv()];
+    let u_off = fit_offset(&mesh, &l0)?;
     let seed = seedmesh::Seed {
         vertices: pv.clone(),
         faces: hull.simplices.clone(),
@@ -644,13 +691,30 @@ fn build_raw(p: &[V3], betas: &[f64], target_nv: f64) -> Result<TruePoly, String
         exclusion_factor: 0.0,
     };
     let flow_mesh = FlowMesh { vertices: x.clone(), faces: mesh.f.clone(), sphere_xyz: mesh.y.clone(), tip_ids: cones, seed };
-    Ok(TruePoly { mesh, flow_mesh, x, corners, crease_edges, l0, u_off, radii, defect_err, fit_resid: f64::NAN, match_err: f64::NAN, match_iters: 0 })
+    Ok(TruePoly { mesh, flow_mesh, x, corners, crease_edges, l0, u_off, radii, defect_err, fit_resid: f64::NAN, match_err: f64::NAN, match_iters: 0, warning: None })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::mesh::defects_and_areas;
+    #[test]
+    fn conformal_vs_preview() {
+        let pos = [[0.7, 0.0], [-0.7, 0.0], [0.0, 0.7], [0.0, -0.7]];
+        let betas = [0.6, 0.7, 0.5, 0.8];
+        let lvl = seedmesh::page_level("coarse").unwrap();
+        let pv = build_preview(&pos, &betas, lvl).unwrap();
+        let tp = build(&pos, &betas, lvl).unwrap();
+        assert!(tp.warning.is_none());
+        assert!(tp.match_err < 2e-3, "match err {}", tp.match_err);
+        assert!(tp.fit_resid < 5e-3, "fit resid {}", tp.fit_resid);
+        // preview: radial positions, cones exactly at the user's points, old LS offset
+        let target = seedmesh::stereographic_to_sphere(&pos);
+        for (i, t) in target.iter().enumerate() {
+            assert!(geom::norm(geom::sub(pv.mesh.y[i], *t)) < 1e-12);
+        }
+        assert!(pv.u_off.iter().all(|x| x.is_finite()));
+    }
     #[test]
     fn page_default_polytope() {
         let pos = [[0.7, 0.0], [-0.7, 0.0], [0.0, 0.7], [0.0, -0.7]];
