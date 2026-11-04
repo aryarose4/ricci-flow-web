@@ -50,6 +50,10 @@ impl FlowSession {
     pub fn set_rescue_final(&mut self, max_back: usize) {
         self.s.cfg.anti.rescue_final = max_back;
     }
+    /// Opt-in rho > 0: realize forward from the t = 0 shape (guarded warm march) instead of backward.
+    pub fn set_forward(&mut self, w_guard: f64, hybrid_rescue: usize) {
+        self.s.cfg.anti.forward = Some(crate::realize::ForwardOpts { w_guard, hybrid_rescue, ..Default::default() });
+    }
     /// Hidden in-between metrics fitted so far (diagnostic).
     pub fn n_hidden(&self) -> usize {
         self.s.n_hidden
