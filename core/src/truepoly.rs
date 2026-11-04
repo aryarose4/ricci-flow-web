@@ -11,8 +11,9 @@
 //!
 //! Mesh: crease edges subdivided at spacing h; each (merged coplanar) facet gets a hexagonal
 //! lattice of interior points and is triangulated by 2D Delaunay (lower hull of the lifted
-//! points).  The solver's unit-sphere positions are the radial projection of the polytope
-//! (origin inside), so the cone vertices sit exactly at the cone points.
+//! points).  The solver's unit-sphere positions `mesh.y` are discrete-conformal coordinates of
+//! the polytope metric (see `conformalize`), and the polytope's cone directions are iterated so
+//! the cones' conformal positions equal the user's cone points (see `build_opts`).
 
 use crate::hull::convex_hull;
 use crate::mesh::Mesh;
@@ -34,12 +35,17 @@ pub struct TruePoly {
     pub crease_edges: Vec<usize>,
     /// polytope edge lengths (mesh.e order) = the flow's l0
     pub l0: Vec<f64>,
-    /// least-squares vertex-scaling log factor of the polytope metric relative to the round
-    /// sphere chords (display offset for the conformal-factor raster)
+    /// vertex-scaling log factor of the polytope metric relative to the round-sphere chords of
+    /// its conformal coordinates `mesh.y` (display offset for the conformal-factor raster)
     pub u_off: Vec<f64>,
     /// solved cone radii and the max cone curvature error of the polytope
     pub radii: Vec<f64>,
     pub defect_err: f64,
+    /// rms per-edge residual of the `u_off` fit (log(l0/chord) - (u_i+u_j)/2)
+    pub fit_resid: f64,
+    /// max chordal distance between the cones' conformal positions and the user's positions
+    pub match_err: f64,
+    pub match_iters: usize,
 }
 
 fn hull_defects(pts: &[V3]) -> Option<(Vec<f64>, crate::hull::Hull)> {
@@ -200,9 +206,243 @@ fn hash01(i: usize, s: u64) -> f64 {
     (x >> 11) as f64 / (1u64 << 53) as f64 - 0.5
 }
 
+/// Build the True Polytope seed.  The polytope's cone directions are iterated (fixed point on
+/// the sphere, Möbius-normalised) so that the CONFORMAL positions of its cones -- not their
+/// radial projections -- equal the user's positions; `mesh.y` holds those conformal coordinates.
 pub fn build(positions: &[[f64; 2]], betas: &[f64], level: (usize, usize, usize)) -> Result<TruePoly, String> {
+    build_opts(positions, betas, level, MATCH_ITERS)
+}
+
+/// max fixed-point iterations of the cone-position match (0 = conformal coordinates only)
+pub const MATCH_ITERS: usize = 12;
+const MATCH_TOL: f64 = 1e-6;
+/// fixed-point relaxation (contracts at ~0.7 per step; 2.0 was measured to diverge)
+const MATCH_RELAX: f64 = 1.0;
+
+pub fn build_opts(positions: &[[f64; 2]], betas: &[f64], level: (usize, usize, usize), iters: usize) -> Result<TruePoly, String> {
     let n = positions.len();
-    let p = seedmesh::stereographic_to_sphere(positions);
+    let target = seedmesh::stereographic_to_sphere(positions);
+    // same vertex budget as the sphere solver mesh of this page level
+    let target_nv = match seedmesh::build_mesh(positions, betas, level) {
+        Ok((m, _)) => m.nv() as f64,
+        Err(_) => (level.0 + n * level.1 * level.2.max(1)) as f64,
+    };
+    let mut p = target.clone();
+    let mut best: Option<(f64, TruePoly)> = None;
+    for it in 0..=iters {
+        let mut tp = build_raw(&p, betas, target_nv)?;
+        conformalize(&mut tp, &target)?;
+        let q: Vec<V3> = tp.mesh.cones.iter().map(|&c| tp.mesh.y[c]).collect();
+        let err = q.iter().zip(&target).map(|(a, b)| geom::norm(geom::sub(*a, *b))).fold(0.0, f64::max);
+        tp.match_err = err;
+        tp.match_iters = it;
+        // stop at the tolerance, the iteration cap, or once the error stalls at the mesh
+        // re-generation noise floor (the facet meshes change with p)
+        let stalled = best.as_ref().map_or(false, |(e, _)| err > 0.9 * *e && err < 1e-2);
+        let done = err < MATCH_TOL || it == iters || stalled;
+        if best.as_ref().map_or(true, |(e, _)| err < *e) {
+            best = Some((err, tp));
+        }
+        if done {
+            break;
+        }
+        // fixed point: move each cone direction by the remaining mismatch
+        for i in 0..n {
+            let np = geom::add(p[i], geom::scale(geom::sub(target[i], q[i]), MATCH_RELAX));
+            p[i] = geom::scale(np, 1.0 / geom::norm(np));
+        }
+    }
+    Ok(best.unwrap().1)
+}
+
+/// Replace the radial sphere positions by discrete-conformal coordinates of the polytope metric:
+/// uniformize the polytope metric to constant curvature with NO cones (every vertex smooth),
+/// lay the resulting near-round metric out on the unit sphere (Gauss-Newton on chord lengths),
+/// Möbius-normalise so the cones best match `target`, and refit the display offset `u_off`.
+fn conformalize(tp: &mut TruePoly, target: &[V3]) -> Result<(), String> {
+    use crate::flow::{DiscreteConeFlow, FlowOptions};
+    let mut m0 = tp.mesh.clone();
+    m0.cones = vec![];
+    let mut flow = DiscreteConeFlow::new(m0, vec![], FlowOptions::default());
+    flow.l0 = tp.l0.clone();
+    let (u, _) = crate::fastunif::uniformize(&mut flow).map_err(|e| format!("polytope conformal map: {e}"))?;
+    let l = flow.lengths(&u);
+    let y = sphere_layout(&tp.mesh.y, &tp.mesh.e, &l)?;
+    let cones = tp.mesh.cones.clone();
+    let src: Vec<V3> = cones.iter().map(|&c| y[c]).collect();
+    let mob = fit_mobius(&src, target);
+    let y: Vec<V3> = y.iter().map(|q| mobius_apply(&mob, *q)).collect();
+    let mesh = Mesh::from_parts(y, tp.mesh.f.clone(), cones);
+    tp.u_off = fit_offset(&mesh, &tp.l0)?;
+    let ch = mesh.chord_lengths();
+    let res: Vec<f64> =
+        mesh.e.iter().enumerate().map(|(k, &[i, j])| (tp.l0[k] / ch[k]).ln() - 0.5 * (tp.u_off[i] + tp.u_off[j])).collect();
+    tp.fit_resid = (res.iter().map(|x| x * x).sum::<f64>() / res.len() as f64).sqrt();
+    tp.flow_mesh.sphere_xyz = mesh.y.clone();
+    tp.mesh = mesh;
+    Ok(())
+}
+
+/// least squares (u_i + u_j)/2 = log(l0 / chord)
+fn fit_offset(mesh: &Mesh, l0: &[f64]) -> Result<Vec<f64>, String> {
+    let chord = mesh.chord_lengths();
+    let nv = mesh.nv();
+    let mut a = Coo::new(nv);
+    let mut rhs = vec![0.0; nv];
+    for (k, &[i, j]) in mesh.e.iter().enumerate() {
+        let g = (l0[k] / chord[k]).ln();
+        for (r, c) in [(i, i), (i, j), (j, i), (j, j)] {
+            a.push(r, c, 0.25);
+        }
+        rhs[i] += 0.5 * g;
+        rhs[j] += 0.5 * g;
+    }
+    for v in 0..nv {
+        a.push(v, v, 1e-12);
+    }
+    Ok(SparseLu::factor(&a)?.solve(&rhs))
+}
+
+/// Unit-sphere points whose chords best match `l` (Gauss-Newton, sphere constraint as a stiff
+/// penalty, renormalised each step), started from `y0`.
+fn sphere_layout(y0: &[V3], e: &[[usize; 2]], l: &[f64]) -> Result<Vec<V3>, String> {
+    let nv = y0.len();
+    let mut y = y0.to_vec();
+    const W: f64 = 10.0;
+    let mut last = f64::INFINITY;
+    for _ in 0..30 {
+        let mut a = Coo::new(3 * nv);
+        let mut g = vec![0.0; 3 * nv];
+        let mut ss = 0.0;
+        for (k, &[i, j]) in e.iter().enumerate() {
+            let d = geom::sub(y[i], y[j]);
+            let dn = geom::norm(d);
+            let r = dn - l[k];
+            ss += r * r;
+            let jv = geom::scale(d, 1.0 / dn);
+            for a1 in 0..3 {
+                for b1 in 0..3 {
+                    let v = jv[a1] * jv[b1];
+                    a.push(3 * i + a1, 3 * i + b1, v);
+                    a.push(3 * j + a1, 3 * j + b1, v);
+                    a.push(3 * i + a1, 3 * j + b1, -v);
+                    a.push(3 * j + a1, 3 * i + b1, -v);
+                }
+                g[3 * i + a1] += jv[a1] * r;
+                g[3 * j + a1] -= jv[a1] * r;
+            }
+        }
+        for v in 0..nv {
+            let r = W * (geom::dot(y[v], y[v]) - 1.0);
+            let jv = geom::scale(y[v], 2.0 * W);
+            for a1 in 0..3 {
+                for b1 in 0..3 {
+                    a.push(3 * v + a1, 3 * v + b1, jv[a1] * jv[b1]);
+                }
+                a.push(3 * v + a1, 3 * v + a1, 1e-9);
+                g[3 * v + a1] += jv[a1] * r;
+            }
+        }
+        let dx = SparseLu::factor(&a)?.solve(&g);
+        for v in 0..nv {
+            let q = [y[v][0] - dx[3 * v], y[v][1] - dx[3 * v + 1], y[v][2] - dx[3 * v + 2]];
+            y[v] = geom::scale(q, 1.0 / geom::norm(q));
+        }
+        let step = dx.iter().fold(0.0f64, |m, x| m.max(x.abs()));
+        if step < 1e-11 || (last - ss).abs() < 1e-14 * last.max(1e-30) {
+            break;
+        }
+        last = ss;
+    }
+    Ok(y)
+}
+
+type C = [f64; 2];
+fn cmul(a: C, b: C) -> C {
+    [a[0] * b[0] - a[1] * b[1], a[0] * b[1] + a[1] * b[0]]
+}
+fn cadd(a: C, b: C) -> C {
+    [a[0] + b[0], a[1] + b[1]]
+}
+/// Möbius map w -> (a w + b)/(c w + d) acting on the unit sphere (stereographic convention of
+/// `seedmesh::stereographic_to_sphere`), via homogeneous coordinates (no special case at infinity).
+pub fn mobius_apply(m: &[C; 4], y: V3) -> V3 {
+    let (z1, z2) = if y[2] < 0.0 { ([y[0], y[1]], [1.0 - y[2], 0.0]) } else { ([1.0 + y[2], 0.0], [y[0], -y[1]]) };
+    let p = cadd(cmul(m[0], z1), cmul(m[1], z2));
+    let q = cadd(cmul(m[2], z1), cmul(m[3], z2));
+    let (pp, qq) = (p[0] * p[0] + p[1] * p[1], q[0] * q[0] + q[1] * q[1]);
+    let s = pp + qq;
+    let pq = cmul(p, [q[0], -q[1]]);
+    [2.0 * pq[0] / s, 2.0 * pq[1] / s, (pp - qq) / s]
+}
+
+/// Least-squares Möbius map (chordal residuals) taking `src` to `dst`; d = 1 (near identity).
+pub fn fit_mobius(src: &[V3], dst: &[V3]) -> [C; 4] {
+    let mk = |x: &[f64; 6]| -> [C; 4] { [[x[0], x[1]], [x[2], x[3]], [x[4], x[5]], [1.0, 0.0]] };
+    let res = |x: &[f64; 6]| -> Vec<f64> {
+        let m = mk(x);
+        src.iter()
+            .zip(dst)
+            .flat_map(|(s, d)| {
+                let q = mobius_apply(&m, *s);
+                [q[0] - d[0], q[1] - d[1], q[2] - d[2]]
+            })
+            .collect()
+    };
+    let mut x = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+    if src.len() < 2 {
+        return mk(&x);
+    }
+    let mut r = res(&x);
+    let mut f = r.iter().map(|v| v * v).sum::<f64>();
+    let mut mu = 1e-6;
+    for _ in 0..200 {
+        let h = 1e-7;
+        let jac: Vec<Vec<f64>> = (0..6)
+            .map(|k| {
+                let mut xp = x;
+                xp[k] += h;
+                res(&xp).iter().zip(&r).map(|(a, b)| (a - b) / h).collect()
+            })
+            .collect();
+        let mut a = vec![vec![0.0; 6]; 6];
+        let mut b = vec![0.0; 6];
+        for i in 0..6 {
+            for j in 0..6 {
+                a[i][j] = jac[i].iter().zip(&jac[j]).map(|(p, q)| p * q).sum();
+            }
+            a[i][i] += mu * (1.0 + a[i][i]);
+            b[i] = -jac[i].iter().zip(&r).map(|(p, q)| p * q).sum::<f64>();
+        }
+        let Some(dx) = solve_lin(&mut a, &mut b) else { break };
+        let mut xn = x;
+        for k in 0..6 {
+            xn[k] += dx[k];
+        }
+        let rn = res(&xn);
+        let fnew = rn.iter().map(|v| v * v).sum::<f64>();
+        if fnew < f {
+            let small = f - fnew < 1e-14 * f.max(1e-30);
+            x = xn;
+            r = rn;
+            f = fnew;
+            mu = (mu * 0.3).max(1e-12);
+            if small || f < 1e-28 {
+                break;
+            }
+        } else {
+            mu *= 10.0;
+            if mu > 1e8 {
+                break;
+            }
+        }
+    }
+    mk(&x)
+}
+
+fn build_raw(p: &[V3], betas: &[f64], target_nv: f64) -> Result<TruePoly, String> {
+    let n = p.len();
+    let p = p.to_vec();
     let cor = extra_corners(&p, 4);
     let (pv, radii, defect_err) = solve_polytope(&p, betas, &cor)?;
     let nvp = pv.len();
@@ -268,11 +508,6 @@ pub fn build(positions: &[[f64; 2]], betas: &[f64], level: (usize, usize, usize)
         .iter()
         .map(|t| 0.5 * geom::norm(geom::cross(geom::sub(pv[t[1]], pv[t[0]]), geom::sub(pv[t[2]], pv[t[0]]))))
         .sum();
-    // same vertex budget as the sphere solver mesh of this page level
-    let target_nv = match seedmesh::build_mesh(positions, betas, level) {
-        Ok((m, _)) => m.nv() as f64,
-        Err(_) => (level.0 + n * level.1 * level.2.max(1)) as f64,
-    };
     let h = (2.0 * area / (3f64.sqrt() * target_nv)).sqrt();
     // vertices: polytope vertices first, then crease points, then facet interiors
     let mut x: Vec<V3> = pv.clone();
@@ -396,23 +631,7 @@ pub fn build(positions: &[[f64; 2]], betas: &[f64], level: (usize, usize, usize)
         .flat_map(|ids| ids.windows(2).map(|w| (w[0].min(w[1]), w[0].max(w[1]))).collect::<Vec<_>>())
         .collect();
     let crease_edges: Vec<usize> = (0..ne).filter(|&k| crease.contains(&(mesh.e[k][0], mesh.e[k][1]))).collect();
-    // display offset: least squares (u_i + u_j)/2 = log(l0 / chord)
-    let chord = mesh.chord_lengths();
-    let nv = mesh.nv();
-    let mut a = Coo::new(nv);
-    let mut rhs = vec![0.0; nv];
-    for (k, &[i, j]) in mesh.e.iter().enumerate() {
-        let g = (l0[k] / chord[k]).ln();
-        for (r, c) in [(i, i), (i, j), (j, i), (j, j)] {
-            a.push(r, c, 0.25);
-        }
-        rhs[i] += 0.5 * g;
-        rhs[j] += 0.5 * g;
-    }
-    for v in 0..nv {
-        a.push(v, v, 1e-12);
-    }
-    let u_off = SparseLu::factor(&a)?.solve(&rhs);
+    let u_off = vec![0.0; mesh.nv()];
     let seed = seedmesh::Seed {
         vertices: pv.clone(),
         faces: hull.simplices.clone(),
@@ -425,7 +644,7 @@ pub fn build(positions: &[[f64; 2]], betas: &[f64], level: (usize, usize, usize)
         exclusion_factor: 0.0,
     };
     let flow_mesh = FlowMesh { vertices: x.clone(), faces: mesh.f.clone(), sphere_xyz: mesh.y.clone(), tip_ids: cones, seed };
-    Ok(TruePoly { mesh, flow_mesh, x, corners, crease_edges, l0, u_off, radii, defect_err })
+    Ok(TruePoly { mesh, flow_mesh, x, corners, crease_edges, l0, u_off, radii, defect_err, fit_resid: f64::NAN, match_err: f64::NAN, match_iters: 0 })
 }
 
 #[cfg(test)]
