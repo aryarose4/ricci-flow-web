@@ -7,3 +7,4 @@ bin/
 core/target_b/
 artifacts/anti-crumple/runs/
 artifacts/anti-crumple/final/*.json
+__pycache__/
