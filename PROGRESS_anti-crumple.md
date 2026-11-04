@@ -16,3 +16,16 @@
 - B with a FOLDED final reference (x5, x6 sharp cones) is harmful: drags folds to early frames, max len err ~1-1.5 %. -> gate: B is off when the final frame has deep folds (`prior_gated`).
 - rho<0 (c4): B with reference = previous accepted frame moves tracker failure t .330 -> .718 (one more frame followed). A: no change.
 - Sharp cones (beta <= .2): late folds sit on cone-incident edges (outside the prior's quads); none of A/B/C fix them (known gap).
+
+## 2026-11-03 — step 3: C tail repair, B tuning, serial final matrix (coarse)
+- C: cold rescue failed on medium case 1 (all cold fits of frames 16-19 fold; the folded end is not `ok`, so "warm from it" is cold too). Replaced the bounce with a tail repair: the first clean backward frame within the last 4 re-fits the later frames forward warm; a gated B is then switched on with the repaired end as reference. Medium case 1: end 60 deep / 8.2 % -> 0 deep / .07 %.
+- B w0 1e-3 pushed max edge error over 5*len_tol (1.5 %) -> frame not ok -> next frame cold-started (broken chain). Default w0 now 3e-4 (max err <= ~1.2 %), plus a safeguard: a not-ok prior fit is redone without the prior.
+- rho<0 at w0 3e-4: no gain (failed_t .330 unchanged); at w0 1e-3: .330 -> .718.
+- Serial matrix (bin/crumple7.exe) in artifacts/anti-crumple/final/matrix.log; GIFs/PNGs in final/.
+
+## 2026-11-03 — step 4: final matrix done (candidate — pending user verification)
+- Tables: artifacts/anti-crumple/final/SUMMARY.md (serial wall times, bin/crumple7.exe). GIFs + worst-frame PNGs in final/.
+- A: no fold/dent/jump gain on any case; +0-65 % wall (c1 medium +24 %, c3b +67 %). Recommend leaving A off.
+- B (w0 3e-4): c2a 4 -> 0 deep, Certified; c3a dents .013 -> .009, H<0 .015 -> .006; max len err up to ~1.2-1.5 %. Gated off on folded ends. rho<0 needs w0 1e-3 to gain (failed_t .330 -> .718).
+- C: the big win. c1 medium end 60 deep / 8.2 % -> 0, Best Attempt -> Certified Target (+35 % wall with B). c3b polytope 7 -> 0, Certified Ricci Flow.
+- Not fixed: c1 medium dent at t .012-.025 (2 deep at .025, from the forward fallback chain); sharp cones beta <= .2 (c2b) fold on cone-incident edges.
