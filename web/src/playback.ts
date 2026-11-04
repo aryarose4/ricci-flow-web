@@ -185,7 +185,10 @@ export class Player {
       else { const t = performance.now(); pl = seg(P, A, B, N); this.stats.planMs.push(performance.now() - t); this.plans.set(B, { pl, p: !!P, n: !!N }); }
     }
     const dur = this.playing ? FRAME_MS : backlog ? BACKLOG_MS : LIVE_MS;
-    if (pl && pl.n > 1) n = Math.max(1, Math.min(pl.n, Math.floor(dur / Math.max(this.cost * COST_SAFETY, MIN_STEP_MS))));
+    // during Play every true frame gets the same wall time, so fill it with as many sub-frames as rendering allows
+    // (small early jumps too); live streaming keeps the jump-based count
+    const cap = Math.floor(dur / Math.max(this.cost * COST_SAFETY, MIN_STEP_MS));
+    if (pl && (this.playing || pl.n > 1)) n = Math.max(1, Math.min(this.playing ? MAXSUB : pl.n, cap));
     this.cur = { A, B, t0, dur, n, pl: n > 1 ? pl : null, shown: 0 };
     if (n > 1) this.stats.nEval.push(n);
     return true;
