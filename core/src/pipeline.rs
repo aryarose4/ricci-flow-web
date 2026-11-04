@@ -2,7 +2,12 @@
 //! `viewer/backend/flow_true.run_flow_true` (Fast realizer, backward realization) as a steppable
 //! [`Session`]: mesh from cone positions -> intrinsic flow frames -> clean start -> backward 3D
 //! realization -> Polytope frame 0 + seed-fold exemption + quality note -> per-frame rows with the
-//! conformal-factor raster.  rho <= 0 is refused with an error (stage 2).
+//! conformal-factor raster.
+//!
+//! rho < 0 (port of `run_flow_true_negative`): the intrinsic flow drives and each frame is realized
+//! FORWARD by the Fast realizer warm-started from the previous frame; [`crate::tracker::Tracker`]
+//! latches the first frame the 3D shape cannot follow.  Frames are produced one per work chunk.
+//! rho = 0 (flat) is refused.
 
 use crate::cfgrid::{CfGrid, GRID_LAT, GRID_LON};
 use crate::flow::{default_times, DiscreteConeFlow, FlowOptions, FlowRun, FlowStats, Frame, Seed};
@@ -11,10 +16,11 @@ use crate::quality::{flow_quality, mark_seed_folds, FrameRow, Quality};
 use crate::realize::{self, Backward, FastRealizer, FlowSource, MetricFrame, RealizeMesh, Realized, SeedKind};
 use crate::realize::geom::V3;
 use crate::seedmesh::{self, FlowMesh};
+use crate::tracker::{self, Mismatch, State, Tracker};
 use std::cell::RefCell;
 use std::f64::consts::PI;
 
-pub const NEG_REFUSAL: &str = "True Ricci Flow needs rho > 0 (for rho < 0 intermediate embeddings generally do not exist; the rho < 0 3D path is not ported yet)";
+pub const NEG_REFUSAL: &str = "True Ricci Flow needs rho != 0 (these cone angles give a flat metric: there is no curvature to flow to)";
 
 /// Session inputs.
 #[derive(Clone, Debug)]
@@ -98,6 +104,13 @@ pub struct FrameOut {
     pub polytope: bool,
     pub start: String,
     pub warning: Option<String>,
+    /// rho < 0 tracking state ("searching" | "following" | "suspect" | "failed" | "lost"); "" for rho > 0
+    pub embed_state: String,
+    /// rho < 0: the vertices are not a passing fit of this frame (searching / failed / lost)
+    pub embed_lost: bool,
+    /// rho < 0: mean / rms ball-averaged curvature error of the 3D attempt, in units of |rho| (NaN for rho > 0)
+    pub k_err_signed: f64,
+    pub k_err_rms: f64,
     /// conformal-factor raster GRID_LAT x GRID_LON (empty until filled)
     pub cf_w: Vec<f64>,
 }
@@ -110,6 +123,8 @@ pub enum Phase {
     Backward,
     Finalize,
     Emit,
+    /// rho < 0: flow one frame and realize it forward (continuation + tracker)
+    Track,
     Done,
 }
 
@@ -121,6 +136,7 @@ impl Phase {
             Phase::BackwardInit | Phase::Backward => "loading the flow in 3D (backward from the uniformized end)",
             Phase::Finalize => "polytope frame / quality",
             Phase::Emit => "streaming frames",
+            Phase::Track => "flowing (true Ricci flow, rho < 0: implicit BDF2 metric, 3D shape by continuation)",
             Phase::Done => "done",
         }
     }
@@ -150,6 +166,12 @@ pub struct Session {
     cf_main: Option<CfGrid>,
     cf_poly: Option<CfGrid>,
     pub warning: Option<String>,
+    /// rho < 0 state
+    pub neg: bool,
+    pub tracker: Option<Tracker>,
+    prev: Option<Realized>,
+    good: Option<Realized>,
+    notice: Option<String>,
 }
 
 fn rms(v: &[f64]) -> f64 {
@@ -163,9 +185,10 @@ impl Session {
             return Err("need one beta per cone position".into());
         }
         let c_curv = 4.0 * PI - cfg.betas.iter().map(|b| 2.0 * PI * (1.0 - b)).sum::<f64>();
-        if !(c_curv > 0.0) {
+        if !(c_curv.abs() > 1e-12) {
             return Err(NEG_REFUSAL.into());
         }
+        let neg = c_curv < 0.0;
         let (mesh, flow_mesh) = seedmesh::build_mesh(&cfg.positions, &cfg.betas, cfg.level).map_err(|e| format!("mesh failed: {e}"))?;
         let flow = DiscreteConeFlow::new(mesh.clone(), cfg.betas.clone(), FlowOptions { seed: cfg.seed, ..Default::default() });
         let n_frames = flow.opts.times.len();
@@ -176,7 +199,7 @@ impl Session {
             mesh,
             flow_mesh,
             c_curv,
-            phase: Phase::Flow,
+            phase: if neg { Phase::Track } else { Phase::Flow },
             n_frames,
             run: Some(run),
             frames: vec![],
@@ -194,6 +217,11 @@ impl Session {
             cf_main: None,
             cf_poly: None,
             warning: None,
+            neg,
+            tracker: None,
+            prev: None,
+            good: None,
+            notice: None,
         })
     }
 
@@ -208,6 +236,9 @@ impl Session {
     }
     /// rho of the uniformized metric (known once the flow frames are computed; NaN before).
     pub fn rho(&self) -> f64 {
+        if self.neg {
+            return if self.phase == Phase::Track { f64::NAN } else { self.rows.last().map_or(f64::NAN, |r| r.rho) };
+        }
         self.frames.last().map_or(f64::NAN, |f| f.diag.rho)
     }
     pub fn frames_intrinsic(&self) -> &[Frame] {
@@ -233,7 +264,9 @@ impl Session {
             Phase::BackwardInit => 0.33,
             Phase::Backward => 0.33 + 0.55 * self.bw.as_ref().map_or(0.0, |b| b.done() as f64) / n,
             Phase::Finalize => 0.9,
+            Phase::Emit if self.neg => 0.99,
             Phase::Emit => 0.92 + 0.08 * self.emitted as f64 / n,
+            Phase::Track => 0.98 * self.rows.len() as f64 / n,
             Phase::Done => 1.0,
         }
     }
@@ -261,8 +294,84 @@ impl Session {
             polytope: false,
             start: r.start.clone(),
             warning: r.warning.clone(),
+            embed_state: String::new(),
+            embed_lost: false,
+            k_err_signed: f64::NAN,
+            k_err_rms: f64::NAN,
             cf_w: vec![],
         }
+    }
+
+    /// rho < 0 banner text once the 3D tracking has failed (`embed_notice`); after the run it is the
+    /// final summary's (an unconfirmed bad last frame or a never-started run also count).
+    pub fn embed_notice(&self) -> Option<String> {
+        self.notice.clone()
+    }
+
+    /// rho < 0: one intrinsic frame + its forward 3D realization; false when the flow is done.
+    fn track_step(&mut self) -> Result<bool, String> {
+        if self.rlz.is_none() {
+            let mesh = &self.mesh;
+            let rm = RealizeMesh::new(mesh.f.clone(), mesh.e.clone(), mesh.cones.clone(), mesh.nv());
+            let (x0, kind) = realize::fast_seed(&mesh.y, &mesh.f, &mesh.cones, &self.cfg.betas);
+            self.rlz = Some(FastRealizer::new(rm, x0, kind));
+            self.tracker = Some(Tracker::new(&mesh.f, &mesh.cones));
+        }
+        let fr = match self.run.as_mut().unwrap().next_frame()? {
+            Some(fr) => fr,
+            None => {
+                let run = self.run.take().unwrap();
+                self.stats_flow = Some(run.flow.stats.clone());
+                let fail = self.tracker.as_mut().unwrap().finish();
+                self.notice = tracker::embed_notice(&fail);
+                let qrows: Vec<FrameRow> = self
+                    .rows
+                    .iter()
+                    .map(|r| FrameRow {
+                        len_rel_max: Some(r.len_rel_max),
+                        len_rel_rms: Some(r.len_rel_rms),
+                        n_deep: r.n_deep,
+                        embed_lost: r.embed_lost,
+                        ..Default::default()
+                    })
+                    .collect();
+                self.quality = flow_quality(&qrows);
+                return Ok(false);
+            }
+        };
+        let (rlz, tr) = (self.rlz.as_ref().unwrap(), self.tracker.as_mut().unwrap());
+        let rho = fr.diag.rho;
+        let (rf, m): (Realized, Mismatch) = match &self.prev {
+            None => tracker::cold_start(rlz, tr, &fr.l, &fr.k_defect, &fr.a_vertex, rho),
+            Some(p) => {
+                let rf = rlz.realize(&fr.l, Some(p));
+                let m = tracker::mismatch(tr, &rf.x, &self.mesh.e, &fr.l, &fr.k_defect, &fr.a_vertex, rho);
+                (rf, m)
+            }
+        };
+        let state = tr.update(fr.t, &m, rf.ok);
+        if state == State::Following {
+            self.good = Some(rf.clone());
+        }
+        if state != State::Searching && rf.ok {
+            self.prev = Some(rf.clone());
+        }
+        if state == State::Failed {
+            self.notice = tracker::embed_notice(&tr.summary());
+        }
+        let mut row = self.row_of(&fr, &rf);
+        if let Some(g) = &self.good {
+            row.vertices = g.x.clone();
+        }
+        row.n_deep = realize::n_deep_folds(&row.vertices, &self.mesh.f, 0.15);
+        row.len_rel_max = m.len_rel_max;
+        row.len_rel_rms = m.len_rel_rms;
+        row.k_err_signed = m.k_err_signed;
+        row.k_err_rms = m.k_err_rms;
+        row.embed_state = state.name().to_string();
+        row.embed_lost = state.lost();
+        self.rows.push(row);
+        Ok(true)
     }
 
     /// `polytope_vertices` applied to a row (Polytope seed, t = 0); false if the fit failed.
@@ -312,6 +421,11 @@ impl Session {
     /// be taken with [`Session::next_frame`]).
     pub fn step(&mut self) -> Result<bool, String> {
         match self.phase {
+            Phase::Track => {
+                if !self.track_step()? {
+                    self.phase = if self.emitted >= self.rows.len() { Phase::Done } else { Phase::Emit };
+                }
+            }
             Phase::Flow => {
                 let run = self.run.as_mut().unwrap();
                 match run.next_frame()? {
@@ -405,13 +519,13 @@ impl Session {
     /// Advance: returns the next output frame (with its cf raster) once the realization is done,
     /// otherwise performs one work chunk and returns None.  Check [`Session::is_done`].
     pub fn next_frame(&mut self) -> Result<Option<FrameOut>, String> {
-        if self.phase == Phase::Emit {
+        if self.phase == Phase::Emit || (self.phase == Phase::Track && self.emitted < self.rows.len()) {
             if self.emitted < self.rows.len() {
                 let mut r = self.rows[self.emitted].clone();
                 self.fill_cf(&mut r);
                 self.rows[self.emitted].cf_w = r.cf_w.clone();
                 self.emitted += 1;
-                if self.emitted == self.rows.len() {
+                if self.emitted == self.rows.len() && self.phase == Phase::Emit {
                     self.phase = Phase::Done;
                 }
                 return Ok(Some(r));

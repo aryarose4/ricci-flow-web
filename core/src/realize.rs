@@ -447,8 +447,12 @@ impl FastRealizer {
     }
 
     fn realize_x(&self, l: &[f64], prev: Option<&Realized>) -> Realized {
+        self.realize_x0(l, prev, None)
+    }
+
+    fn realize_x0(&self, l: &[f64], prev: Option<&Realized>, cold_x0: Option<&[V3]>) -> Realized {
         let warm = prev.map_or(false, |p| p.ok);
-        let x0 = if warm { prev.unwrap().x.clone() } else { self.x0.clone() };
+        let x0 = if warm { prev.unwrap().x.clone() } else { cold_x0.map_or_else(|| self.x0.clone(), |x| x.to_vec()) };
         let mut runs: Vec<(&str, &[(f64, usize)])> = Vec::new();
         if warm {
             runs.push(("warm", &WARM));
@@ -506,6 +510,15 @@ impl FastRealizer {
     /// `FastRealizer.realize(frame, prev)` (diag included; ok = len_rel_max < 5 len_tol).
     pub fn realize(&self, l: &[f64], prev: Option<&Realized>) -> Realized {
         let mut r = self.realize_x(l, prev);
+        set_len(&mut r, &self.mesh.edges, l, self.len_tol);
+        r
+    }
+
+    /// Cold realization from a caller-given seed (`FastRealizer(x0).realize(frame, None)`; used by the
+    /// rho < 0 tracker's multi-start).  A scaled seed is a plain array in Python: no seed-kind warning.
+    pub fn realize_cold_from(&self, l: &[f64], x0: &[V3]) -> Realized {
+        let mut r = self.realize_x0(l, None, Some(x0));
+        r.warning = None;
         set_len(&mut r, &self.mesh.edges, l, self.len_tol);
         r
     }

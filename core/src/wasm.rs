@@ -112,6 +112,15 @@ impl FlowSession {
     pub fn warning(&self) -> Option<String> {
         self.s.warning.clone()
     }
+    /// rho < 0: plain-language banner once the 3D shape can no longer follow the flow (undefined while
+    /// following and always for rho > 0).  Final after `done()`.
+    pub fn embed_notice(&self) -> Option<String> {
+        self.s.embed_notice()
+    }
+    /// true for the rho < 0 (forward-tracking) path
+    pub fn negative(&self) -> bool {
+        self.s.neg
+    }
     /// [steps, newton, rejected, newton_fail] of the intrinsic flow (frames only)
     pub fn flow_stats(&self) -> Vec<u32> {
         self.s.stats_flow.as_ref().map_or(vec![], |s| vec![s.steps as u32, s.newton as u32, s.rejected as u32, s.newton_fail as u32])
@@ -190,6 +199,22 @@ impl FlowFrame {
     }
     pub fn warning(&self) -> Option<String> {
         self.f.warning.clone()
+    }
+    /// rho < 0: "searching" | "following" | "suspect" | "failed" | "lost"; "" for rho > 0
+    pub fn embed_state(&self) -> String {
+        self.f.embed_state.clone()
+    }
+    /// rho < 0: vertices are the last good 3D frame (or a failed attempt), not a fit of this frame
+    pub fn embed_lost(&self) -> bool {
+        self.f.embed_lost
+    }
+    /// rho < 0: signed mean curvature error of the 3D attempt / |rho| (NaN for rho > 0)
+    pub fn k_err_signed(&self) -> f64 {
+        self.f.k_err_signed
+    }
+    /// rho < 0: rms curvature error of the 3D attempt / |rho| (NaN for rho > 0)
+    pub fn k_err_rms(&self) -> f64 {
+        self.f.k_err_rms
     }
     /// conformal-factor raster, 64 x 128 row-major (rows lat 0..pi from north, cols lon -pi..pi)
     pub fn cf_w(&self) -> Vec<f64> {
