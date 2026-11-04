@@ -90,7 +90,7 @@ export class CfDiscs {
       c.addEventListener('dblclick', () => { this.zoom = 1; this.draw(); });
     });
     canvases.forEach((c, k) => {
-      for (let i = 0; i < 5; i++) { const d = document.createElement('div'); d.className = 'cone'; d.hidden = true; d.style.pointerEvents = 'none'; c.parentElement!.appendChild(d); this.mkEls[k].push(d); }
+      for (let i = 0; i < 8; i++) { const d = document.createElement('div'); d.className = 'cone'; d.hidden = true; d.style.pointerEvents = 'none'; c.parentElement!.appendChild(d); this.mkEls[k].push(d); }
     });
     this.resize();
   }
