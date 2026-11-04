@@ -28,7 +28,7 @@ function lines(n: number, T: number, extra: number[]) {
   return o;
 }
 
-const TWO = 2 * Math.PI, HP = Math.PI / 2;
+const TWO = 2 * Math.PI, HP = Math.PI / 2, RIM = 0.12; // RIM: angular band past the equator where a cone shows on both plots
 
 export class CfDiscs {
   private renderers: THREE.WebGLRenderer[];
@@ -41,7 +41,9 @@ export class CfDiscs {
   private hems: Hem[] | null = null;
   private dark = false;
   // view state (shared by both plots, same defaults and gestures as the Python page)
-  private yaw = 0.6; private elev = 1.1; private zoom = 1;
+  private yaw = 0.6; private elev = 1.1; private zoom = 1; private dragV = 0;
+  /** the south plot is the mirror image (viewed from the south pole), so it turns the opposite way: rims then match */
+  private yawOf(k: number) { return k ? -this.yaw : this.yaw; }
   // draggable cone markers (shown while no flow is displayed, like the Python page's live preview)
   private mk: Mk[][] = [[], []]; private mkEls: HTMLDivElement[][] = [[], []];
   markersOn = true;
@@ -58,7 +60,7 @@ export class CfDiscs {
       new ResizeObserver(() => this.resize()).observe(c.parentElement!);
       let drag: { x: number; y: number } | null = null;
       c.style.cursor = 'grab'; c.style.touchAction = 'none';
-      let cone = -1;
+      let cone = -1; this.dragV = 0;
       const pix = (e: PointerEvent) => { const r = c.getBoundingClientRect(); return [(e.clientX - r.left), (e.clientY - r.top)]; };
       const hit = (e: PointerEvent) => {
         if (!this.markersOn) return -1;
@@ -70,13 +72,15 @@ export class CfDiscs {
       c.addEventListener('pointermove', e => {
         if (!drag) { c.style.cursor = hit(e) >= 0 ? 'pointer' : 'grab'; return; }
         if (cone >= 0) { // drag the marker: inverse of the plot projection at the marker's own height
-          const m = this.mk[k].find(z => z.i === cone); if (!m || !this.range) return;
-          const [px, py] = pix(e), q0 = this.screenOf(m, k), s = c.clientWidth, h = 1.25 / this.zoom;
-          const se = Math.max(0.3, Math.sin(this.elev)), cy = Math.cos(this.yaw), sy = Math.sin(this.yaw);
-          const dx = (px - q0[0]) / s * 2 * h, dy = -(py - q0[1]) / s * 2 * h;
-          const x1 = m.u * Math.cos(m.ph) * cy - m.u * Math.sin(m.ph) * sy + dx, y1 = m.u * Math.cos(m.ph) * sy + m.u * Math.sin(m.ph) * cy + dy / se;
+          if (!this.range) return;
+          const m = this.mk[k].find(z => z.i === cone); if (m) this.dragV = m.v;
+          const [px, py] = pix(e), s = c.clientWidth, h = 1.25 / this.zoom, yw = this.yawOf(k);
+          const se = Math.max(0.3, Math.sin(this.elev)), ce = Math.cos(this.elev), cy = Math.cos(yw), sy = Math.sin(yw);
+          // absolute inverse of the plot projection at the marker's last height (works past the rim too)
+          const v = (this.dragV - this.range[0]) / ((this.range[1] - this.range[0]) || 1) - 0.5;
+          const x1 = (px / s * 2 - 1) * h, y1 = ((1 - py / s * 2) * h - v * 0.8 * ce) / se;
           let qx = x1 * cy + y1 * sy, qy = -x1 * sy + y1 * cy; const u = Math.hypot(qx, qy);
-          if (u > 0.995) { qx *= 0.995 / u; qy *= 0.995 / u; }
+          if (u > 1.6) { qx *= 1.6 / u; qy *= 1.6 / u; } // past the rim = onto the other hemisphere
           if (u < 1e-4) { qx = 1e-4; qy = 0; }
           this.onDragCone?.(cone, this.diskToPlane(qx, qy, k), false); return;
         }
@@ -102,7 +106,7 @@ export class CfDiscs {
 
   private screenOf(m: Mk, k: number): [number, number] {
     const range = this.range!, lo = range[0], span = (range[1] - range[0]) || 1, s = this.canvases[k].clientWidth, h = 1.25 / this.zoom;
-    const cy = Math.cos(this.yaw), sy = Math.sin(this.yaw), ce = Math.cos(this.elev), se = Math.sin(this.elev);
+    const cy = Math.cos(this.yawOf(k)), sy = Math.sin(this.yawOf(k)), ce = Math.cos(this.elev), se = Math.sin(this.elev);
     const px = m.u * Math.cos(m.ph), py = m.u * Math.sin(m.ph), v = (m.v - lo) / span - 0.5, x1 = px * cy - py * sy, y1 = px * sy + py * cy;
     return [(x1 / h + 1) / 2 * s, (1 - (v * 0.8 * ce + y1 * se) / h) / 2 * s];
   }
@@ -177,7 +181,7 @@ export class CfDiscs {
       hem.push({ verts, NI, NJ });
       U.forEach((u, i) => {
         const ti = Math.acos(Math.max(-1, Math.min(1, u[2]))), li = Math.atan2(u[1], u[0]), a = k ? Math.PI - ti : ti;
-        if (a > HP) return;
+        if (a > HP + RIM) return; // near the rim: labelled on both plots so it can be dragged across
         const ph = k ? Math.PI - li : li + Math.PI;
         this.mk[k].push({ i, u: Math.tan(a / 2), ph, v: samp(ti, li) + cmodel(dirOf(ti, li), U, B, flR) });
       });
@@ -193,7 +197,7 @@ export class CfDiscs {
       const r = this.renderers[k];
       r.setClearColor(this.dark ? 0x121417 : 0xf4f4f2, 1);
       const old = this.meshes[k]; if (old) { this.scenes[k].remove(old); old.geometry.dispose(); this.meshes[k] = null; }
-      if (this.hems && this.range) { const m = this.mesh(this.hems[k], this.range); this.meshes[k] = m; this.scenes[k].add(m); }
+      if (this.hems && this.range) { const m = this.mesh(this.hems[k], this.range, k); this.meshes[k] = m; this.scenes[k].add(m); }
       r.render(this.scenes[k], this.cam);
       this.mkEls[k].forEach((el, i) => {
         const m = this.markersOn && this.range ? this.mk[k].find(z => z.i === i) : undefined;
@@ -204,9 +208,9 @@ export class CfDiscs {
     }
   }
 
-  private mesh(H: Hem, range: [number, number]) {
+  private mesh(H: Hem, range: [number, number], k: number) {
     const lo = range[0], span = (range[1] - range[0]) || 1;
-    const cy = Math.cos(this.yaw), sy = Math.sin(this.yaw), ce = Math.cos(this.elev), se = Math.sin(this.elev);
+    const cy = Math.cos(this.yawOf(k)), sy = Math.sin(this.yawOf(k)), ce = Math.cos(this.elev), se = Math.sin(this.elev);
     // P = [screen x, screen y, depth (larger = farther, as in the Python painter)]
     const P: V3[][] = H.verts.map(r => r.map(p => {
       const v = (p[2] - lo) / span - 0.5, x1 = p[0] * cy - p[1] * sy, y1 = p[0] * sy + p[1] * cy;
