@@ -47,7 +47,7 @@ fn main() {
             }
         }
         for seed in ["true_polytope", "polytope", "gluing"] {
-            let cfg = SessionConfig { positions: pos.clone(), betas: betas.clone(), seed: Seed::parse(seed).unwrap(), level: page_level(lvl).unwrap() };
+            let cfg = SessionConfig { positions: pos.clone(), betas: betas.clone(), seed: Seed::parse(seed).unwrap(), level: page_level(lvl).unwrap(), anti: Default::default() };
             let t0 = Instant::now();
             let mut s = match Session::new(cfg) {
                 Ok(s) => s,

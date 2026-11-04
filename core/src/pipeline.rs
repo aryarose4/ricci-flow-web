@@ -31,6 +31,20 @@ pub struct SessionConfig {
     pub seed: Seed,
     /// (N Fibonacci points, m spokes, K rings); see [`seedmesh::page_level`]
     pub level: (usize, usize, usize),
+    /// opt-in anti-crumple options for the 3D realization (default: off = the Python port)
+    pub anti: AntiCrumple,
+}
+
+/// Opt-in anti-crumple options (lane anti-crumple).  `Default` = off: bit-identical to the port.
+#[derive(Clone, Debug, Default)]
+pub struct AntiCrumple {
+    /// (A) adaptive hidden intermediate metrics between output frames
+    pub adaptive: Option<realize::Adaptive>,
+    /// (B) fading fold-angle prior toward the reference (final / last good) frame's dihedrals
+    pub prior: Option<realize::FoldPrior>,
+    /// (C) rho > 0: rescue a folded uniformized end from the last clean cold fit among the
+    /// `rescue_final` frames before it (0 = off)
+    pub rescue_final: usize,
 }
 
 /// The flow as a [`FlowSource`] for the realizer (between = `solver.between`, blend of u(0), u(T)).
@@ -174,6 +188,14 @@ pub struct Session {
     notice: Option<String>,
     /// True Polytope seed: the polytope (mesh, 3D positions, creases)
     pub true_poly: Option<crate::truepoly::TruePoly>,
+    /// hidden in-between metrics fitted by the realization (diagnostic)
+    pub n_hidden: usize,
+    /// (B) was requested but switched off because the uniformized end folded
+    pub prior_gated: bool,
+    /// (C) the uniformized end was re-fitted
+    pub rescued: bool,
+    /// rho < 0: previous intrinsic frame (for the opt-in hidden metrics)
+    prev_fr: Option<Frame>,
 }
 
 fn rms(v: &[f64]) -> f64 {
@@ -242,6 +264,10 @@ impl Session {
             good: None,
             notice: None,
             true_poly,
+            n_hidden: 0,
+            prior_gated: false,
+            rescued: false,
+            prev_fr: None,
         })
     }
 
@@ -364,7 +390,41 @@ impl Session {
         let (rf, m): (Realized, Mismatch) = match &self.prev {
             None => tracker::cold_start(rlz, tr, &fr.l, &fr.k_defect, &fr.a_vertex, rho),
             Some(p) => {
-                let rf = rlz.realize(&fr.l, Some(p));
+                // opt-in (A) hidden metrics from the previous intrinsic frame, (B) prior toward the previous
+                // accepted shape (the final frame is not realizable here; see PROGRESS_anti-crumple.md)
+                let anti = self.cfg.anti.clone();
+                let t_end = *self.run.as_ref().unwrap().flow.opts.times.last().unwrap();
+                if let Some(pr) = &anti.prior {
+                    rlz.set_prior_ref(Some(&p.x), pr.hinge);
+                }
+                let mut c = p.clone();
+                if let (Some(a), Some(pf)) = (&anti.adaptive, &self.prev_fr) {
+                    let dl = pf.l.iter().zip(&fr.l).map(|(a, b)| (b / a).ln().abs()).fold(0.0, f64::max);
+                    let nsub = ((dl / a.step_rel).ceil() as usize).min(a.max_sub).max(1) - 1;
+                    for j in 1..=nsub {
+                        let t = pf.t + (fr.t - pf.t) * j as f64 / (nsub + 1) as f64;
+                        if let Some(pr) = &anti.prior {
+                            rlz.set_prior_w(pr.weight(t, t_end));
+                        }
+                        let lt = match self.run.as_mut().unwrap().flow.between(pf, t) {
+                            Ok(f) => f.l,
+                            Err(_) => continue,
+                        };
+                        let rm = if a.cheap { rlz.realize_cheap(&lt, &c) } else { rlz.realize(&lt, Some(&c)) };
+                        self.n_hidden += 1;
+                        if rm.ok {
+                            c = rm;
+                        }
+                    }
+                }
+                if let Some(pr) = &anti.prior {
+                    rlz.set_prior_w(pr.weight(fr.t, t_end));
+                }
+                let rf = rlz.realize(&fr.l, Some(&c));
+                if anti.prior.is_some() {
+                    rlz.set_prior_ref(None, false);
+                    rlz.set_prior_w(0.0);
+                }
                 let m = tracker::mismatch(tr, &rf.x, &self.mesh.e, &fr.l, &fr.k_defect, &fr.a_vertex, rho);
                 (rf, m)
             }
@@ -380,6 +440,9 @@ impl Session {
             self.notice = tracker::embed_notice(&tr.summary());
         }
         let mut row = self.row_of(&fr, &rf);
+        if self.cfg.anti.adaptive.is_some() {
+            self.prev_fr = Some(fr.clone());
+        }
         if let Some(g) = &self.good {
             row.vertices = g.x.clone();
         }
@@ -508,7 +571,12 @@ impl Session {
             }
             Phase::BackwardInit => {
                 let (rlz, src) = (self.rlz.as_ref().unwrap(), self.src.as_ref().unwrap());
-                self.bw = Some(Backward::new(rlz, src, &self.mframes, self.start.take()));
+                let a = &self.cfg.anti;
+                let mut bw = Backward::new(rlz, src, &self.mframes, self.start.take());
+                if a.rescue_final > 0 {
+                    bw.rescue_final(rlz, &self.mframes, a.rescue_final);
+                }
+                self.bw = Some(bw.with_options(rlz, a.adaptive.clone(), a.prior.clone()));
                 self.phase = Phase::Backward;
             }
             Phase::Backward => {
@@ -518,7 +586,16 @@ impl Session {
                 }
             }
             Phase::Finalize => {
-                let res = self.bw.take().unwrap().finish();
+                let bw = self.bw.take().unwrap();
+                self.n_hidden = bw.n_hidden;
+                self.prior_gated = bw.prior_gated;
+                self.rescued = bw.rescued;
+                if self.cfg.anti.prior.is_some() {
+                    let rlz = self.rlz.as_ref().unwrap();
+                    rlz.set_prior_ref(None, false);
+                    rlz.set_prior_w(0.0);
+                }
+                let res = bw.finish();
                 let mut rows: Vec<FrameOut> = self.frames.iter().zip(&res).map(|(f, r)| self.row_of(f, r)).collect();
                 let mut qrows: Vec<FrameRow> = rows
                     .iter()

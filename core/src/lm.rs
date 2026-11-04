@@ -220,6 +220,12 @@ pub struct FadeSetup {
     /// bending quads (a, b, c, d) of edges not touching a cone (`bend_gn.edge_quads` order)
     pub quads: Vec<[usize; 4]>,
     sky: Skyline,
+    /// opt-in fold-angle prior: per-quad reference angles (fade_lm's sign convention, see
+    /// [`quad_angles`]); None = off (the exact Python port)
+    pub prior: Option<Vec<f64>>,
+    /// prior weight w: adds w * sum (theta - theta_ref)^2 (hinge: only below min(theta_ref, 0))
+    pub prior_w: f64,
+    pub prior_hinge: bool,
 }
 
 impl FadeSetup {
@@ -241,7 +247,7 @@ impl FadeSetup {
             rows.push(vec3(q));
         }
         let sky = Skyline::from_rows(3 * nv, &rows);
-        FadeSetup { nv, faces: faces.to_vec(), edges: edges.to_vec(), quads, sky }
+        FadeSetup { nv, faces: faces.to_vec(), edges: edges.to_vec(), quads, sky, prior: None, prior_w: 0.0, prior_hinge: false }
     }
 }
 
@@ -274,6 +280,27 @@ fn theta(a: V3, b: V3, c: V3, d: V3) -> f64 {
     s.atan2(c_)
 }
 
+/// Signed bending angle of every quad of `s` at `x` (sign = orientation of x, as in [`fade_lm`]).
+pub fn quad_angles(s: &FadeSetup, x: &[V3]) -> Vec<f64> {
+    let sgn = if geom::signed_volume(x, &s.faces) > 0.0 { 1.0 } else { -1.0 };
+    s.quads.iter().map(|q| sgn * theta(x[q[0]], x[q[1]], x[q[2]], x[q[3]])).collect()
+}
+
+/// Prior residual of one quad (unweighted): theta - theta_ref, or the hinge part below min(theta_ref, 0).
+#[inline]
+fn prior_res(t: f64, tr: f64, hinge: bool) -> f64 {
+    if hinge {
+        (t - tr.min(0.0)).min(0.0)
+    } else {
+        t - tr
+    }
+}
+
+#[inline]
+fn prior_on(s: &FadeSetup) -> bool {
+    s.prior.is_some() && s.prior_w > 0.0
+}
+
 fn phi_of(s: &FadeSetup, x: &[V3], l: &[f64], lam: f64, sgn: f64) -> f64 {
     let mut p = 0.0;
     for (e, &le) in s.edges.iter().zip(l) {
@@ -287,6 +314,15 @@ fn phi_of(s: &FadeSetup, x: &[V3], l: &[f64], lam: f64, sgn: f64) -> f64 {
             b += t * t;
         }
         p += lam * b;
+    }
+    if prior_on(s) {
+        let tr = s.prior.as_ref().unwrap();
+        let mut b = 0.0;
+        for (q, &r0) in s.quads.iter().zip(tr) {
+            let r = prior_res(sgn * theta(x[q[0]], x[q[1]], x[q[2]], x[q[3]]), r0, s.prior_hinge);
+            b += r * r;
+        }
+        p += s.prior_w * b;
     }
     p
 }
@@ -313,8 +349,9 @@ fn system(s: &mut FadeSetup, x: &[V3], l: &[f64], lam: f64, sgn: f64) -> Vec<f64
             g[idx[k]] += val[k] * r;
         }
     }
-    if lam > 0.0 {
-        let sl = lam.sqrt();
+    let pon = prior_on(s);
+    if lam > 0.0 || pon {
+        let pw = if pon { s.prior_w } else { 0.0 };
         for qi in 0..s.quads.len() {
             let q = s.quads[qi];
             let p0 = [x[q[0]], x[q[1]], x[q[2]], x[q[3]]];
@@ -327,13 +364,45 @@ fn system(s: &mut FadeSetup, x: &[V3], l: &[f64], lam: f64, sgn: f64) -> Vec<f64
                     pm[k][c] -= h;
                     let v = sgn * (theta(pp[0], pp[1], pp[2], pp[3]) - theta(pm[0], pm[1], pm[2], pm[3])) / (2.0 * h);
                     idx[3 * k + c] = 3 * q[k] + c;
-                    val[3 * k + c] = sl * v;
+                    val[3 * k + c] = v;
                 }
             }
-            s.sky.add_outer(&idx, &val);
-            let r = sl * sgn * theta(p0[0], p0[1], p0[2], p0[3]);
+            let th = sgn * theta(p0[0], p0[1], p0[2], p0[3]);
+            // bending lam*th^2 and prior w*res^2 share the gradient row v: J^T J += (lam + w') v v^T,
+            // g += v (lam th + w res); w' = 0 where the hinge is inactive
+            let (mut wq, mut gq) = (lam, lam * th);
+            if pw > 0.0 {
+                let r0 = s.prior.as_ref().unwrap()[qi];
+                let res = prior_res(th, r0, s.prior_hinge);
+                if !(s.prior_hinge && res == 0.0) {
+                    wq += pw;
+                    gq += pw * res;
+                }
+            }
+            if lam > 0.0 && pw == 0.0 {
+                // the exact Python-port arithmetic (sqrt(lam) rows), kept bit-identical
+                let sl = lam.sqrt();
+                for k in 0..12 {
+                    val[k] *= sl;
+                }
+                s.sky.add_outer(&idx, &val);
+                let r = sl * th;
+                for k in 0..12 {
+                    g[idx[k]] += val[k] * r;
+                }
+                continue;
+            }
+            if wq <= 0.0 {
+                continue;
+            }
+            let sq = wq.sqrt();
+            let gv = val;
             for k in 0..12 {
-                g[idx[k]] += val[k] * r;
+                val[k] = sq * gv[k];
+            }
+            s.sky.add_outer(&idx, &val);
+            for k in 0..12 {
+                g[idx[k]] += gv[k] * gq;
             }
         }
     }
