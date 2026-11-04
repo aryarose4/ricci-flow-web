@@ -199,13 +199,19 @@ fn main() {
             }
             _ => String::new(),
         };
+        // independent check: edge-length error of the EMITTED vertices vs this frame's own target lengths
+        let rr = if fr.faces.is_none() {
+            let rel = geom::len_rel(&fr.vertices, &s.mesh.e, &fr.lengths);
+            ((rel.iter().map(|v| v * v).sum::<f64>() / rel.len() as f64).sqrt(), rel.iter().cloned().fold(0.0, f64::max))
+        } else { (f64::NAN, f64::NAN) };
+        let rr = (if rr.0.is_finite() { rr.0 } else { -1.0 }, if rr.1.is_finite() { rr.1 } else { -1.0 });
         let fs = match &fr.faces {
             Some(ff) => format!("{:?}", ff),
             None => "null".into(),
         };
         let _ = write!(
             js,
-            "{}{{\"k\":{},\"t\":{},\"len_rel_rms\":{},\"len_rel_max\":{},\"n_reflex\":{},\"n_deep\":{},\"min_dih\":{},\"dent_depth\":{},\"dent_frac\":{},\"h_neg_frac\":{},\"jump\":{},\"state\":\"{}\",\"start\":\"{}\",\"k_err\":{},\"k_err_rms\":{},\"kv\":[{}],\"faces\":{},\"x\":[{}]}}",
+            "{}{{\"k\":{},\"t\":{},\"len_rel_rms\":{},\"len_rel_max\":{},\"n_reflex\":{},\"n_deep\":{},\"min_dih\":{},\"dent_depth\":{},\"dent_frac\":{},\"h_neg_frac\":{},\"jump\":{},\"state\":\"{}\",\"start\":\"{}\",\"len_rms_recomp\":{},\"len_max_recomp\":{},\"k_err\":{},\"k_err_rms\":{},\"kv\":[{}],\"faces\":{},\"x\":[{}]}}",
             if i > 0 { "," } else { "" },
             fr.k,
             fr.t,
@@ -220,6 +226,8 @@ fn main() {
             if m.jump.is_finite() { m.jump } else { -1.0 },
             fr.embed_state,
             fr.start,
+            rr.0,
+            rr.1,
             if fr.k_err_signed.is_finite() { fr.k_err_signed } else { 0.0 },
             if fr.k_err_rms.is_finite() { fr.k_err_rms } else { 0.0 },
             kv,

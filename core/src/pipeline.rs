@@ -478,8 +478,11 @@ impl Session {
         let fo = self.cfg.anti.forward.clone().unwrap();
         let rho = fr.diag.rho;
         let t_frame = fr.t;
+        // the march starts only once some frame has passed (followed); while still searching, keep the
+        // tracker's multi-seed cold start (marching warm from a folded never-passing start keeps its folds)
+        let started = self.tracker.as_ref().map_or(false, |t| t.last_good_t.is_some());
         let rf: Realized = match (&self.prev, &self.prev_fr) {
-            (Some(p), Some(pf)) => {
+            (Some(p), Some(pf)) if started => {
                 let rlz = self.rlz.as_ref().unwrap();
                 let flow = &mut self.run.as_mut().unwrap().flow;
                 let dl = pf.l.iter().zip(&fr.l).map(|(a, b)| (b / a).ln().abs()).fold(0.0, f64::max);

@@ -25,3 +25,25 @@
     t .152 fold-free (0 deep) at .52 % rms, so it fails earlier (failed_t .33) — honest. New still has 1 deep fold on
     4 late frames (even w 100x guard). Wall 22 -> 96 s (guard escalation on every late frame; slow).
 - Not done: Medium run, browser click-through on :4393 (only tsc + vite build). cargo test --release all pass.
+
+## 2026-11-04 — verifier follow-up: exact commands, re-run, recomputed errors, smart/polytope
+- Exact commands (repo root of the worktree; `cargo build --release --example crumple`; no env vars; mode `base` = current
+  tracker, mode `F` = `anti.forward = ForwardOpts::default()` (w_guard 1e-2, step_rel .04, max_sub 8, hinge)):
+  - c4:  `core/target/release/examples/crumple.exe OUT.json {base|F} gluing coarse ".3,.3,.3,.3" "0.7,0;0,0.7;-0.7,0;0,-0.7"`
+  - n3:  `... {base|F} gluing coarse ".2,.3,.4" "0.7,0;-0.35,0.606218;-0.35,-0.606218"`
+  - mx:  `... {base|F} gluing coarse ".25,.45,.35,.3" "0.6,0.1;-0.2,0.7;-0.6,-0.3;0.3,-0.5"`
+  - smart / polytope variants: same as c4 with seed `smart` / `polytope`.
+- Re-run reproduces c4 exactly: base failed_t .330, F failed_t 1.56, 0 deep on every frame both.
+  Run JSONs committed: artifacts/neg-forward/runs/c4_base.json, c4_F.json.
+- Harness now writes `len_rms_recomp` / `len_max_recomp` = edge error of the EMITTED vertices vs that frame's own
+  target lengths. c4 F, k 17 (t 1.56, failed): row 1.151 % / 4.661 %, recomputed 1.151 % / 4.661 % (identical); K err
+  row +4.54 % = mean of the emitted-vertex Length-Fit values +4.54 %. Baseline k 17: row says 1.15 % rms but the emitted
+  (frozen) vertices are 30.5 % rms / 86.7 % max off this frame's lengths, K 25 % vs reported 4.4 % -> the old display
+  under-reports by ~25x.
+- smart / polytope square: the t = 0 cold start never passes (6 / 14 deep folds at frame 0, state "searching" on EVERY
+  frame in both modes; failed_t NaN because tracking never started). First F version marched warm from that folded
+  start, and the guard only forbids ADDING folds, so F ended with 2-3 deep vs base 0 (base cold-starts each searching
+  frame). Fix: the march starts only after a frame has passed; while searching F uses the tracker's cold start.
+  Now smart/polytope F == base per frame (identical states/deep). F is not better there; neither is faithful. The
+  gluing seed is the only one of the three that starts clean for this config.
+- After the fix: c4 / n3 / mx F unchanged (same states, deep, failed_t). cargo test --release passes.
