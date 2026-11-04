@@ -45,6 +45,9 @@ pub struct AntiCrumple {
     /// (C) rho > 0: rescue a folded uniformized end from the last clean cold fit among the
     /// `rescue_final` frames before it (0 = off)
     pub rescue_final: usize,
+    /// (F, lane forward-flow) rho > 0: realize FORWARD from the t = 0 seed instead of backward
+    /// from the uniformized end (A/B/C are then unused)
+    pub forward: Option<realize::ForwardOpts>,
 }
 
 /// The flow as a [`FlowSource`] for the realizer (between = `solver.between`, blend of u(0), u(T)).
@@ -170,6 +173,7 @@ pub struct Session {
     rlz: Option<FastRealizer>,
     start: Option<Realized>,
     bw: Option<Backward>,
+    fw: Option<realize::Forward>,
     mframes: Vec<MetricFrame>,
     pub stats_flow: Option<FlowStats>,
     pub seed_corners: Vec<usize>,
@@ -194,6 +198,8 @@ pub struct Session {
     pub prior_gated: bool,
     /// (C) the uniformized end was re-fitted
     pub rescued: bool,
+    /// (F hybrid) frames taken from the backward realization
+    pub n_from_backward: usize,
     /// rho < 0: previous intrinsic frame (for the opt-in hidden metrics)
     prev_fr: Option<Frame>,
 }
@@ -248,6 +254,7 @@ impl Session {
             rlz: None,
             start: None,
             bw: None,
+            fw: None,
             mframes: vec![],
             stats_flow: None,
             seed_corners,
@@ -267,6 +274,7 @@ impl Session {
             n_hidden: 0,
             prior_gated: false,
             rescued: false,
+            n_from_backward: 0,
             prev_fr: None,
         })
     }
@@ -308,7 +316,7 @@ impl Session {
             Phase::Flow => 0.25 * self.run.as_ref().map_or(0.0, |r| r.k as f64) / n,
             Phase::CleanStart => 0.25,
             Phase::BackwardInit => 0.33,
-            Phase::Backward => 0.33 + 0.55 * self.bw.as_ref().map_or(0.0, |b| b.done() as f64) / n,
+            Phase::Backward => 0.33 + 0.55 * self.bw.as_ref().map_or_else(|| self.fw.as_ref().map_or(0.0, |f| f.done() as f64), |b| b.done() as f64) / n,
             Phase::Finalize => 0.9,
             Phase::Emit if self.neg => 0.99,
             Phase::Emit => 0.92 + 0.08 * self.emitted as f64 / n,
@@ -572,6 +580,11 @@ impl Session {
             Phase::BackwardInit => {
                 let (rlz, src) = (self.rlz.as_ref().unwrap(), self.src.as_ref().unwrap());
                 let a = &self.cfg.anti;
+                if let Some(fo) = a.forward.clone() {
+                    self.fw = Some(realize::Forward::new(rlz, &self.mframes, self.start.take(), fo));
+                    self.phase = Phase::Backward;
+                    return Ok(true);
+                }
                 let mut bw = Backward::new(rlz, src, &self.mframes, self.start.take());
                 if a.rescue_final > 0 {
                     bw.rescue_final(rlz, &self.mframes, a.rescue_final);
@@ -581,11 +594,35 @@ impl Session {
             }
             Phase::Backward => {
                 let (rlz, src) = (self.rlz.as_ref().unwrap(), self.src.as_ref().unwrap());
+                if let Some(fw) = self.fw.as_mut() {
+                    if !fw.step(rlz, src, &self.mframes) {
+                        self.phase = Phase::Finalize;
+                    }
+                    return Ok(true);
+                }
                 if !self.bw.as_mut().unwrap().step(rlz, src, &self.mframes) {
                     self.phase = Phase::Finalize;
                 }
             }
             Phase::Finalize => {
+                let res = if let Some(fw) = self.fw.take() {
+                    self.n_hidden = fw.n_hidden;
+                    let hy = fw.opts.hybrid_rescue;
+                    let res = fw.finish();
+                    let rlz = self.rlz.as_ref().unwrap();
+                    if hy > 0 && realize::any_deep(rlz, &res) {
+                        let src = self.src.as_ref().unwrap();
+                        let mut bw = Backward::new(rlz, src, &self.mframes, Some(res[0].clone()));
+                        bw.rescue_final(rlz, &self.mframes, hy);
+                        while bw.step(rlz, src, &self.mframes) {}
+                        self.rescued = bw.rescued;
+                        let (m, nb) = realize::merge_cleaner(rlz, res, bw.finish());
+                        self.n_from_backward = nb;
+                        m
+                    } else {
+                        res
+                    }
+                } else {
                 let bw = self.bw.take().unwrap();
                 self.n_hidden = bw.n_hidden;
                 self.prior_gated = bw.prior_gated;
@@ -595,7 +632,8 @@ impl Session {
                     rlz.set_prior_ref(None, false);
                     rlz.set_prior_w(0.0);
                 }
-                let res = bw.finish();
+                bw.finish()
+                };
                 let mut rows: Vec<FrameOut> = self.frames.iter().zip(&res).map(|(f, r)| self.row_of(f, r)).collect();
                 let mut qrows: Vec<FrameRow> = rows
                     .iter()

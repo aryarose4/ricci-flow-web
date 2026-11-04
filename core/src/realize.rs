@@ -1185,3 +1185,132 @@ pub fn polytope_vertices(mesh: &RealizeMesh, x: &[V3], corner_ids: &[usize], l: 
         faces: fp,
     })
 }
+
+// ------------------------------------------------------------------ forward (lane forward-flow)
+/// Opt-in FORWARD realization (lane forward-flow): march from the t = 0 seed shape to the end,
+/// warm, with hidden flow metrics every `step_rel` (max |log| edge-length ratio), at most `max_sub`
+/// per frame.  Where a warm fit folds (deep folds the previous shape did not have), it is retried
+/// with (i) a fold prior toward the previous shape (`w_guard`, hinge) and (ii) twice the substeps;
+/// the cleaner fit is kept.
+#[derive(Clone, Debug)]
+pub struct ForwardOpts {
+    pub step_rel: f64,
+    pub max_sub: usize,
+    pub w_guard: f64,
+    pub hinge: bool,
+    /// when some forward frame folds: also run the backward realization (with final rescue
+    /// `rescue_final`) and keep, per frame, the cleaner of the two (0 = off)
+    pub hybrid_rescue: usize,
+}
+
+impl Default for ForwardOpts {
+    fn default() -> Self {
+        ForwardOpts { step_rel: 0.04, max_sub: 8, w_guard: 1e-2, hinge: true, hybrid_rescue: 0 }
+    }
+}
+
+pub struct Forward {
+    pub opts: ForwardOpts,
+    pub n_hidden: usize,
+    pub n_guarded: usize,
+    out: Vec<Option<Realized>>,
+    next: usize,
+}
+
+impl Forward {
+    pub fn new(rlz: &FastRealizer, frs: &[MetricFrame], start: Option<Realized>, opts: ForwardOpts) -> Forward {
+        let mut out: Vec<Option<Realized>> = vec![None; frs.len()];
+        out[0] = Some(start.unwrap_or_else(|| rlz.realize(&frs[0].lengths, None)));
+        Forward { opts, n_hidden: 0, n_guarded: 0, out, next: 1 }
+    }
+
+    pub fn done(&self) -> usize {
+        self.next
+    }
+
+    /// chain prev -> frame k through `nsub` hidden metrics; prior weight `w` toward `prev` (0 = off)
+    fn chain(&mut self, rlz: &FastRealizer, src: &dyn FlowSource, frs: &[MetricFrame], k: usize, nsub: usize, w: f64) -> Realized {
+        let prev = self.out[k - 1].clone().unwrap();
+        if w > 0.0 {
+            rlz.set_prior_ref(Some(&prev.x), self.opts.hinge);
+        }
+        rlz.set_prior_w(w);
+        let mut c = prev.clone();
+        for j in 1..=nsub {
+            let t = frs[k - 1].t + (frs[k].t - frs[k - 1].t) * j as f64 / (nsub + 1) as f64;
+            let lt = src.between(&frs[k - 1], t);
+            let rm = rlz.realize(&lt, Some(&c));
+            self.n_hidden += 1;
+            if rm.ok {
+                c = rm;
+            }
+        }
+        let mut r = rlz.realize(&frs[k].lengths, Some(&c));
+        if w > 0.0 && !r.ok {
+            // the prior must never break the chain: re-fit the end without it
+            rlz.set_prior_w(0.0);
+            r = rlz.realize(&frs[k].lengths, Some(&c));
+        }
+        rlz.set_prior_w(0.0);
+        rlz.set_prior_ref(None, false);
+        r.x = geom::kabsch_align(&r.x, &prev.x);
+        r
+    }
+
+    /// Fit the next frame; false when all frames are done.
+    pub fn step(&mut self, rlz: &FastRealizer, src: &dyn FlowSource, frs: &[MetricFrame]) -> bool {
+        let k = self.next;
+        if k >= frs.len() {
+            return false;
+        }
+        let prev = self.out[k - 1].clone().unwrap();
+        let dl = frs[k - 1].lengths.iter().zip(&frs[k].lengths).map(|(a, b)| (b / a).ln().abs()).fold(0.0, f64::max);
+        let nsub = ((dl / self.opts.step_rel).ceil() as usize).min(self.opts.max_sub).max(1) - 1;
+        let mut r = self.chain(rlz, src, frs, k, nsub, 0.0);
+        let d0 = deep(rlz, &prev);
+        if !r.ok || deep(rlz, &r) > d0 {
+            self.n_guarded += 1;
+            if self.opts.w_guard > 0.0 {
+                let g = self.chain(rlz, src, frs, k, nsub, self.opts.w_guard);
+                if cleaner_picks_b(rlz, &r, &g) {
+                    r = g;
+                }
+            }
+            if !r.ok || deep(rlz, &r) > d0 {
+                let g = self.chain(rlz, src, frs, k, (2 * nsub + 1).min(4 * self.opts.max_sub), self.opts.w_guard);
+                if cleaner_picks_b(rlz, &r, &g) {
+                    r = g;
+                }
+            }
+            r.start += "+guard";
+        }
+        self.out[k] = Some(r);
+        self.next += 1;
+        self.next < frs.len()
+    }
+
+    pub fn finish(self) -> Vec<Realized> {
+        self.out.into_iter().map(|r| r.unwrap()).collect()
+    }
+}
+
+/// (F hybrid) per frame, the cleaner of the forward and backward realizations; a backward frame is
+/// rigidly aligned to the previous kept frame (clean convex realizations agree up to a rigid motion).
+pub fn merge_cleaner(rlz: &FastRealizer, fwd: Vec<Realized>, bwd: Vec<Realized>) -> (Vec<Realized>, usize) {
+    let mut out: Vec<Realized> = Vec::with_capacity(fwd.len());
+    let mut nb = 0;
+    for (f, b) in fwd.into_iter().zip(bwd) {
+        let mut keep = if cleaner_picks_b(rlz, &f, &b) && deep(rlz, &b) < deep(rlz, &f) { nb += 1; b } else { f };
+        if let Some(p) = out.last() {
+            keep.x = geom::kabsch_align(&keep.x, &p.x);
+        }
+        out.push(keep);
+    }
+    (out, nb)
+}
+
+/// any frame with deep folds
+pub fn any_deep(rlz: &FastRealizer, rs: &[Realized]) -> bool {
+    rs.iter().any(|r| deep(rlz, r) > 0)
+}
+

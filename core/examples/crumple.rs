@@ -114,6 +114,25 @@ fn main() {
     if mode.contains('C') {
         anti.rescue_final = envf("AC_RESCUE").map_or(4, |v| v as usize);
     }
+    if mode.contains('F') {
+        let mut fo = ricci_core::realize::ForwardOpts::default();
+        if let Some(v) = envf("FW_STEP") {
+            fo.step_rel = v;
+        }
+        if let Some(v) = envf("FW_MAXSUB") {
+            fo.max_sub = v as usize;
+        }
+        if let Some(v) = envf("FW_W") {
+            fo.w_guard = v;
+        }
+        if let Some(v) = envf("FW_HINGE") {
+            fo.hinge = v != 0.0;
+        }
+        if mode.contains('H') {
+            fo.hybrid_rescue = envf("AC_RESCUE").map_or(4, |v| v as usize);
+        }
+        anti.forward = Some(fo);
+    }
     if mode.contains('B') {
         let mut p = FoldPrior::default();
         if let Some(v) = envf("AC_W0") {
@@ -200,10 +219,12 @@ fn main() {
     std::fs::write(out, js).unwrap();
     let nf = (frames.len() - 1).max(1) as f64;
     println!(
-        "{mode}: wall {wall:.2}s hidden {} gated {} rescued {} | max deep {mx_deep} reflex {mx_reflex} | max dent {mx_dent:.4} | mean Hneg {:.3} | jump max {mx_jump:.4} mean {:.4} | max rms {:.2e} | {} failed_t {failed_t}",
+        "{mode}: wall {wall:.2}s hidden {} gated {} rescued {} from_bw {} | len_max {:.2e} | max deep {mx_deep} reflex {mx_reflex} | max dent {mx_dent:.4} | mean Hneg {:.3} | jump max {mx_jump:.4} mean {:.4} | max rms {:.2e} | {} failed_t {failed_t}",
         s.n_hidden,
         s.prior_gated,
         s.rescued,
+        s.n_from_backward,
+        frames.iter().map(|f| f.len_rel_max).fold(0.0, f64::max),
         sum_hneg / nf,
         sum_jump / nj.max(1) as f64,
         mx_rms,
