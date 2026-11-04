@@ -51,6 +51,7 @@ impl FlowSession {
         self.s.cfg.anti.rescue_final = max_back;
     }
     /// Opt-in rho > 0: realize forward from the t = 0 shape (guarded warm march) instead of backward.
+    /// rho < 0: guarded fold-free march that keeps showing its own fit past tracking failure.
     pub fn set_forward(&mut self, w_guard: f64, hybrid_rescue: usize) {
         self.s.cfg.anti.forward = Some(crate::realize::ForwardOpts { w_guard, hybrid_rescue, ..Default::default() });
     }

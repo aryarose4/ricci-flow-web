@@ -241,7 +241,12 @@ const player = new Player({
   sliderValue: () => parseInt(($('play') as HTMLInputElement).value, 10),
 });
 /** rho < 0: say when the 3D view is not a faithful shape of this frame (as the Python page's frame label). */
-function embedTag(f: FlowFrame) { return !f.embedLost ? '' : f.embedState === 'searching' ? ' (no faithful 3D shape yet)' : ' (3D lost: last good shape)'; }
+function embedTag(f: FlowFrame) {
+  if (!f.embedLost) return '';
+  if (f.embedState === 'searching') return ' (no faithful 3D shape yet)';
+  // rho < 0 guarded march: the shown shape is this frame's fold-free best fit, not a frozen earlier one
+  return f.lenRelRms != null && f.lenRelRms === f.lenRelRms ? ` (3D not faithful: best fold-free shape, ${(100 * f.lenRelRms).toFixed(1)}% length error)` : ' (3D lost)';
+}
 function showFrame() { const f = frames[cur]; if (f) display(f); }
 function redraw() { if (frames.length) showFrame(); }
 

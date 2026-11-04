@@ -393,6 +393,9 @@ impl Session {
                 return Ok(false);
             }
         };
+        if self.cfg.anti.forward.is_some() {
+            return self.neg_forward_step(fr);
+        }
         let (rlz, tr) = (self.rlz.as_ref().unwrap(), self.tracker.as_mut().unwrap());
         let rho = fr.diag.rho;
         let (rf, m): (Realized, Mismatch) = match &self.prev {
@@ -461,6 +464,108 @@ impl Session {
         row.k_err_rms = m.k_err_rms;
         row.embed_state = state.name().to_string();
         row.embed_lost = state.lost();
+        self.rows.push(row);
+        Ok(true)
+    }
+
+    /// rho < 0 with `anti.forward` (lane neg-forward): guarded forward march.  Every frame is fitted
+    /// WARM from the previously SHOWN shape (also past tracking failure: no cold restarts, no frozen
+    /// "last good" shape) through hidden flow metrics; a fit that adds deep folds is re-fitted with a
+    /// hinge fold prior toward the previous shape at escalating weights, and the candidate with the
+    /// fewest deep folds wins (ties: lower length rms).  Fold-free beats a smaller length error: where
+    /// R^3 cannot hold the metric the error grows and is reported, instead of hidden in folds.
+    fn neg_forward_step(&mut self, fr: Frame) -> Result<bool, String> {
+        let fo = self.cfg.anti.forward.clone().unwrap();
+        let rho = fr.diag.rho;
+        let t_frame = fr.t;
+        let rf: Realized = match (&self.prev, &self.prev_fr) {
+            (Some(p), Some(pf)) => {
+                let rlz = self.rlz.as_ref().unwrap();
+                let flow = &mut self.run.as_mut().unwrap().flow;
+                let dl = pf.l.iter().zip(&fr.l).map(|(a, b)| (b / a).ln().abs()).fold(0.0, f64::max);
+                let nsub = ((dl / fo.step_rel).ceil() as usize).min(fo.max_sub).max(1) - 1;
+                let mut lts: Vec<(usize, Vec<Vec<f64>>)> = vec![];
+                let mut hidden = |n: usize, flow: &mut crate::flow::DiscreteConeFlow| -> Vec<Vec<f64>> {
+                    if let Some((_, v)) = lts.iter().find(|(m, _)| *m == n) {
+                        return v.clone();
+                    }
+                    let v: Vec<Vec<f64>> = (1..=n)
+                        .filter_map(|j| flow.between(pf, pf.t + (t_frame - pf.t) * j as f64 / (n + 1) as f64).ok().map(|f| f.l))
+                        .collect();
+                    lts.push((n, v.clone()));
+                    v
+                };
+                let d0 = realize::n_deep_folds(&p.x, &self.mesh.f, 0.15);
+                let mut nh = 0;
+                let mut chain = |ls: &[Vec<f64>], w: f64| -> Realized {
+                    if w > 0.0 {
+                        rlz.set_prior_ref(Some(&p.x), fo.hinge);
+                    }
+                    rlz.set_prior_w(w);
+                    let mut c = Realized { ok: true, ..p.clone() };
+                    for lt in ls {
+                        let mut rm = rlz.realize_cheap(lt, &c);
+                        rm.ok = true; // keep marching warm even where R^3 cannot hold the metric
+                        c = rm;
+                        nh += 1;
+                    }
+                    let mut r = rlz.realize(&fr.l, Some(&c));
+                    rlz.set_prior_w(0.0);
+                    rlz.set_prior_ref(None, false);
+                    r.x = realize::geom::kabsch_align(&r.x, &p.x);
+                    r
+                };
+                let key = |r: &Realized| (realize::n_deep_folds(&r.x, &self.mesh.f, 0.15), r.len_rel_rms);
+                let ls = hidden(nsub, flow);
+                let mut best = chain(&ls, 0.0);
+                let mut kb = key(&best);
+                if kb.0 > d0 {
+                    let ls2 = hidden((2 * nsub + 1).min(4 * fo.max_sub), flow);
+                    for (i, w) in [fo.w_guard, 10.0 * fo.w_guard, 100.0 * fo.w_guard].into_iter().enumerate() {
+                        let g = chain(if i == 0 { &ls } else { &ls2 }, w);
+                        let kg = key(&g);
+                        if kg.0 < kb.0 || (kg.0 == kb.0 && kg.1 < kb.1) {
+                            best = g;
+                            kb = kg;
+                        }
+                        if kb.0 <= d0 {
+                            break;
+                        }
+                    }
+                    best.start += "+guard";
+                }
+                self.n_hidden += nh;
+                best
+            }
+            _ => {
+                let (rlz, tr) = (self.rlz.as_ref().unwrap(), self.tracker.as_ref().unwrap());
+                tracker::cold_start(rlz, tr, &fr.l, &fr.k_defect, &fr.a_vertex, rho).0
+            }
+        };
+        let tr = self.tracker.as_mut().unwrap();
+        let m = tracker::mismatch(tr, &rf.x, &self.mesh.e, &fr.l, &fr.k_defect, &fr.a_vertex, rho);
+        let state = tr.update(fr.t, &m, rf.ok);
+        if state == State::Failed || (state == State::Lost && self.notice.is_some()) {
+            let base = tracker::embed_notice(&tr.summary()).unwrap_or_default();
+            self.notice = Some(format!(
+                "{} Shown instead: the fold-free shape closest to the flow, now {}% off in edge lengths (max {}%) and {:+.0}% off in curvature at t = {}.",
+                base,
+                tracker::fmt_g(100.0 * m.len_rel_rms, 2),
+                tracker::fmt_g(100.0 * m.len_rel_max, 2),
+                100.0 * m.k_err_signed,
+                tracker::fmt_g(fr.t, 3)
+            ));
+        }
+        let mut row = self.row_of(&fr, &rf);
+        row.n_deep = realize::n_deep_folds(&row.vertices, &self.mesh.f, 0.15);
+        row.len_rel_max = m.len_rel_max;
+        row.len_rel_rms = m.len_rel_rms;
+        row.k_err_signed = m.k_err_signed;
+        row.k_err_rms = m.k_err_rms;
+        row.embed_state = state.name().to_string();
+        row.embed_lost = state.lost();
+        self.prev = Some(rf);
+        self.prev_fr = Some(fr);
         self.rows.push(row);
         Ok(true)
     }
