@@ -18,6 +18,8 @@ pub enum Seed {
     Gluing,
     /// flat faces, curvature in cones + 4 extra corners
     Polytope,
+    /// an actual convex polytope meshed along its creases (`truepoly`): l0 = polytope lengths, u(0) = 0
+    TruePolytope,
 }
 
 impl Seed {
@@ -26,6 +28,7 @@ impl Seed {
             "smart" => Some(Seed::Smart),
             "gluing" => Some(Seed::Gluing),
             "polytope" => Some(Seed::Polytope),
+            "true_polytope" | "true-polytope" | "truepolytope" => Some(Seed::TruePolytope),
             _ => None,
         }
     }
@@ -329,6 +332,7 @@ impl DiscreteConeFlow {
         match self.opts.seed {
             Seed::Gluing => self.gluing_u(),
             Seed::Polytope => self.polytope_u(4),
+            Seed::TruePolytope => self.true_polytope_u(),
             Seed::Smart => self.smart_u(),
         }
     }
@@ -455,6 +459,18 @@ impl DiscreteConeFlow {
             return Err("polytope seed failed (no convergence)".into());
         }
         self.seed_corners = corners;
+        Ok(self.gauge(&u))
+    }
+
+    /// True Polytope: `l0` already holds the polytope edge lengths (set by the caller from
+    /// `truepoly::build`), so u(0) = 0 (gauged); the cone curvatures must already be exact.
+    pub fn true_polytope_u(&mut self) -> FlowResult<Vec<f64>> {
+        let u = vec![0.0; self.nv()];
+        let (_, g) = self.geom(&u);
+        let err = self.mesh.cones.iter().enumerate().map(|(ci, &c)| (g.k[c] - self.cone_k[ci]).abs()).fold(0.0, f64::max);
+        if !g.face.valid || err > 1e-8 {
+            return Err(format!("true polytope seed needs the polytope mesh and lengths (cone error {err:.1e})"));
+        }
         Ok(self.gauge(&u))
     }
 
