@@ -35,7 +35,9 @@ h4{margin:0 0 6px;font-size:14px}
 canvas{display:block;touch-action:none;max-width:100%}
 #lbls{position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;overflow:hidden}
 .cone{position:absolute;left:0;top:0;width:22px;height:22px;border-radius:50%;background:#e0301e;border:2px solid #fff;color:#fff;font:bold 11px/18px sans-serif;text-align:center}
-.cone.back{width:12px;height:12px;background:rgba(224,48,30,.3);font-size:0;color:transparent}
+.cone.drag{pointer-events:auto;cursor:grab;touch-action:none}
+body.dragging-cone,body.dragging-cone *{cursor:grabbing!important}
+.cone.back{pointer-events:none;width:12px;height:12px;background:rgba(224,48,30,.3);font-size:0;color:transparent}
 #notice{position:absolute;top:10px;left:10px;right:10px;z-index:9;line-height:1.4;padding:8px 12px;border-radius:6px;background:rgba(122,43,43,.88);color:#fff;font-size:13px;pointer-events:none}
 #legend{position:absolute;right:10px;top:10px;z-index:8;min-width:170px;padding:6px 10px 5px;border-radius:8px;background:var(--legbg);color:var(--fg);border:1px solid var(--div);font:12px/1.3 system-ui,sans-serif;pointer-events:none}
 #legend .t{font-weight:600;margin-bottom:4px}
@@ -70,6 +72,10 @@ canvas{display:block;touch-action:none;max-width:100%}
 #statusbar{display:grid;grid-template-columns:1fr 1fr;gap:3px 28px;padding:8px 16px;background:var(--panel);border:1px solid var(--bd);border-radius:10px}
 #statusrow{grid-column:1/-1;display:flex;justify-content:space-between;gap:16px;min-height:1.2em}
 #qnote{font-weight:600}#qnote.good{color:#2e9e5b}#qnote.bad{color:#d9822b}
+#stats{display:contents}#st-mesh{grid-column:1}#st-acc{grid-column:2}
 #st-mesh,#st-acc{display:flex;flex-direction:column;gap:3px}
 .st{display:flex;justify-content:space-between;gap:12px}.st span{color:var(--mut)}.st b{font-weight:600;font-variant-numeric:tabular-nums}
 @media(max-width:920px){#panel{grid-template-columns:1fr}#panel>section+section{border-left:0;border-top:1px solid var(--div)}}
+
+#st-l:empty::after,#st-c:empty::after{content:'-'}
+#playbox[hidden]{display:none!important}

@@ -113,16 +113,15 @@ export interface OverlayResult {
 }
 
 export class CurvatureOverlay {
-  mode: 'none' | 'length' | 'gauss' = 'none';
+  mode: 'none' | 'length' | 'gauss' = 'gauss';
   srel = parseFloat(SENSITIVITY_DEFAULT);
   rho = 1;
   private range: [number, number] | null = null;
   private rangeKey = '';
   private key = '';
-  private cache: OverlayResult | null = null;
-  private cacheFrame: FlowFrame | null = null;
+  private cache = new WeakMap<FlowFrame, OverlayResult>();
 
-  invalidate() { this.cache = null; this.cacheFrame = null; }
+  invalidate() { this.cache = new WeakMap(); }
   resetRange() { this.range = null; this.rangeKey = ''; this.invalidate(); }
 
   private estimate(V: Float32Array, faces: Uint32Array, tips: number[]) { return this.mode === 'length' ? estimateIntr(V, faces, tips, 1) : estimateExtr(V, faces, tips, 1); }
@@ -139,14 +138,23 @@ export class CurvatureOverlay {
       const lo = Math.min(pct(e, RQ), this.rho), hi = Math.max(pct(e, 1 - RQ), this.rho), sp = Math.max(hi - lo, 1e-3 * Math.abs(this.rho));
       this.range = [lo - BUF * sp, hi + BUF * sp];
     }
-    this.rangeKey = key; this.cache = null;
+    this.rangeKey = key; this.invalidate();
   }
 
   compute(f: FlowFrame, f0: FlowFrame, tips: number[]): OverlayResult | null {
     if (this.mode === 'none') return null;
     this.fitRange(f0, tips);
     const key = `${this.mode}|${this.srel}|${this.rho}`;
-    if (this.cache && this.cacheFrame === f && this.key === key) return this.cache;
+    if (this.key !== key) { this.invalidate(); this.key = key; }
+    const hit = this.cache.get(f); if (hit) return hit;
+    if (f.blend) { // smooth sub-frame: blend the true frames' overlays (the interpolated shape is not a solver realization)
+      const A = this.compute(f.blend.a, f0, tips), B = this.compute(f.blend.b, f0, tips);
+      if (A && B && A.faceT.length === B.faceT.length && A.vertT.length === B.vertT.length) {
+        const s = f.blend.s, mix = (x: Float32Array, y: Float32Array) => { const o = new Float32Array(x.length); for (let i = 0; i < o.length; i++) o[i] = (1 - s) * x[i] + s * y[i]; return o; };
+        const r: OverlayResult = { faceT: mix(A.faceT, B.faceT), vertT: mix(A.vertT, B.vertT), lo: (1 - s) * A.lo + s * B.lo, hi: (1 - s) * A.hi + s * B.hi };
+        this.cache.set(f, r); return r;
+      }
+    }
     const nv = f.vertices.length / 3, nf = f.faces.length / 3, rho = this.rho;
     const fr = this.srel / 0.5, r = this.range ?? [rho - 0.3 * Math.abs(rho), rho + 0.3 * Math.abs(rho)];
     let dl = Math.max(fr * (rho - r[0]), 1e-3 * Math.abs(rho)), dh = Math.max(fr * (r[1] - rho), 1e-3 * Math.abs(rho));
@@ -173,8 +181,8 @@ export class CurvatureOverlay {
     }
     const faceT = new Float32Array(nf);
     for (let q = 0; q < nf; q++) faceT[q] = (vertT[f.faces[3 * q]] + vertT[f.faces[3 * q + 1]] + vertT[f.faces[3 * q + 2]]) / 3;
-    this.cache = { faceT, vertT, lo: dl, hi: dh }; this.cacheFrame = f; this.key = key;
-    return this.cache;
+    const out = { faceT, vertT, lo: dl, hi: dh }; this.cache.set(f, out);
+    return out;
   }
 
   /** Mean of the adjacent faces' values (NaN if all grey): used for wireframe edge colours. */

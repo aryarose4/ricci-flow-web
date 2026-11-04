@@ -35,7 +35,7 @@ export class WasmSolver implements Solver {
           faces0 = faces;
           const sv = s.sphere_vertices();
           onMeta({
-            request: req, rho: s.rho(), coneIds: Array.from(s.cones()),
+            request: req, rho: Number.isFinite(s.rho()) ? s.rho() : f.rho() /* rho < 0: known per frame until the run ends */, coneIds: Array.from(s.cones()),
             sphereVertices: Float32Array.from(sv), sphereFaces: faces, edges: s.edges(),
             nFrames: s.n_frames(), label: undefined, notice: s.warning() ?? null,
           });
@@ -43,7 +43,9 @@ export class WasmSolver implements Solver {
         const last = s.done();
         const lbl = s.quality_label();
         const quality: Quality | null = last && lbl ? { label: lbl, ok: s.quality_ok() ?? false, detail: s.quality_detail() ?? undefined } : null;
-        onFrame(convert(f, faces0!, s.progress(), quality));
+        const fr = convert(f, faces0!, s.progress(), quality);
+        if (s.negative()) fr.embedNotice = s.embed_notice() ?? null;
+        onFrame(fr);
         f.free();
       }
     } finally { s.free(); }
@@ -59,6 +61,6 @@ function convert(f: WFrame, sessionFaces: Uint32Array, progress: number, quality
     K, Kdef: Float32Array.from(kd), Avert: Float32Array.from(av), rho: f.rho(), polytope: f.polytope(),
     wGrid: { nx, ny, values: Float32Array.from(f.cf_w()), extent: [-Math.PI, Math.PI, 0, Math.PI] },
     L: Float32Array.from(f.lengths()), gbError: f.gb_resid(), lenRelRms: f.len_rel_rms(), coneDefectErr: f.cone_defect_err(),
-    quality, progress,
+    quality, progress, embedState: f.embed_state(), embedLost: f.embed_lost(),
   };
 }

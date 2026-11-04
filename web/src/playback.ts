@@ -3,7 +3,7 @@
 // (rigidly de-rotated; time reparametrised by jump size; Bessel tangents with a monotone limiter). The solver output
 // is untouched. Same constants as Python.
 
-export const TARGET = 0.004, MAXSUB = 40, TICK_MS = 40;
+export const TARGET = 0.004, MAXSUB = 40, TICK_MS = 60;
 
 type V3 = number[];
 type M3 = number[][];

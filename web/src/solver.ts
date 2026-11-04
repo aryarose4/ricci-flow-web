@@ -55,7 +55,15 @@ export interface FlowFrame {
   lenRelRms?: number;     // 3D edge length vs target, relative RMS
   coneDefectErr?: number;
   quality: Quality | null; // non-null only on the last frame
+  /** rho < 0 tracking: '' (rho > 0) | searching | following | suspect | failed | lost. */
+  embedState?: string;
+  /** true: the shown vertices are not a passing fit of this frame (searching: current attempt; failed/lost: last good shape). */
+  embedLost?: boolean;
+  /** rho < 0: banner text once the 3D shape could not follow (set from the failed frame on). */
+  embedNotice?: string | null;
   progress: number;       // 0..1
+  /** Display only: a smooth-playback sub-frame. Overlays blend the two true frames' values instead of measuring the interpolated shape. */
+  blend?: { a: FlowFrame; b: FlowFrame; s: number };
 }
 
 export interface Solver {

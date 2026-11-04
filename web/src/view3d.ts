@@ -28,9 +28,14 @@ export class View3D {
   private coneEls: HTMLElement[] = [];
   readonly curv = new CurvatureOverlay();
   shading: Shading = 'reflective';
-  overlay: Overlay = 'none';
+  overlay: Overlay = 'gauss';
   legendRange: [number, number] = [0, 0];
   onLegend: (() => void) | null = null;
+  /** Called while a cone marker is dragged on the surface (fin = false) and on release (fin = true), with its stereographic-plane position. */
+  onDragCone: ((i: number, pos: [number, number], fin: boolean) => void) | null = null;
+  private dragCone = -1;
+  private lastPos: [number, number] = [0, 0];
+  private ray = new THREE.Raycaster();
 
   constructor(private canvas: HTMLCanvasElement, private labels: HTMLElement) {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
@@ -65,10 +70,7 @@ export class View3D {
     this.previewMode = false; this.keepOrbit = false; this.meta = meta; this.frame = null; this.frame0 = null; this.fitted = false;
     this.curv.rho = meta.rho; this.curv.resetRange();
     this.labels.textContent = '';
-    this.coneEls = meta.coneIds.map((_, i) => {
-      const d = document.createElement('div'); d.className = 'cone'; d.textContent = String(i + 1);
-      this.labels.appendChild(d); return d;
-    });
+    this.coneEls = meta.coneIds.map((_, i) => this.coneEl(i));
     this.camera.position.set(0, 0, 10); this.camera.zoom = 1; this.camera.updateProjectionMatrix();
     this.controls.target.set(0, 0, 0); this.controls.update();
   }
@@ -81,15 +83,54 @@ export class View3D {
     this.curv.rho = p.rho;
     if (first || this.coneEls.length !== p.coneIds.length) {
       this.labels.textContent = '';
-      this.coneEls = p.coneIds.map((_, i) => { const d = document.createElement('div'); d.className = 'cone'; d.textContent = String(i + 1); this.labels.appendChild(d); return d; });
+      this.coneEls = p.coneIds.map((_, i) => this.coneEl(i));
     }
-    if (first) { this.curv.resetRange(); this.camera.position.set(0, 0, 10); this.camera.zoom = 1; this.controls.target.set(0, 0, 0); }
+    if (first && this.dragCone < 0) { this.curv.resetRange(); this.camera.position.set(0, 0, 10); this.camera.zoom = 1; this.controls.target.set(0, 0, 0); }
     this.previewMode = true;
     const f: FlowFrame = { t: 0, faces: p.faces, vertices: p.vertices, u: z, K: z, gbError: 0, quality: null, progress: 0 };
-    this.fitted = false; this.keepOrbit = !first;
+    this.fitted = false; this.keepOrbit = !first || this.dragCone >= 0;
     this.setFrame(f, f);
   }
   private previewMode = false;
+
+  /** A draggable cone marker. Move/up listen on the window so a drag survives the markers being rebuilt. */
+  private coneEl(i: number) {
+    const d = document.createElement('div'); d.className = 'cone drag'; d.textContent = String(i + 1);
+    d.addEventListener('pointerdown', e => {
+      if (e.button !== 0 || d.classList.contains('back')) return;
+      e.preventDefault(); e.stopPropagation();
+      this.dragCone = i; this.controls.enabled = false; document.body.classList.add('dragging-cone');
+      const move = (ev: PointerEvent) => { const p = this.planeAt(ev.clientX, ev.clientY, i); if (p) { this.lastPos = p; this.onDragCone?.(i, p, false); } };
+      const up = () => {
+        window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); window.removeEventListener('pointercancel', up);
+        this.dragCone = -1; this.controls.enabled = true; document.body.classList.remove('dragging-cone');
+        this.onDragCone?.(i, this.lastPos, true);
+      };
+      const p0 = this.planeAt(e.clientX, e.clientY, i); if (p0) this.lastPos = p0;
+      window.addEventListener('pointermove', move); window.addEventListener('pointerup', up); window.addEventListener('pointercancel', up);
+    });
+    this.labels.appendChild(d); return d;
+  }
+
+  /** Screen point -> stereographic plane. Hit the surface (the cone's 3D direction equals its sphere point); off the surface, use the sphere through the cone, or its silhouette. */
+  private planeAt(cx: number, cy: number, i: number): [number, number] | null {
+    const r = this.canvas.getBoundingClientRect();
+    this.camera.updateMatrixWorld();
+    this.ray.setFromCamera(new THREE.Vector2((cx - r.left) / r.width * 2 - 1, -((cy - r.top) / r.height) * 2 + 1), this.camera);
+    let p: THREE.Vector3 | null = null;
+    if (this.mesh.visible || this.wfLines.visible) { const h = this.ray.intersectObject(this.mesh, false)[0]; if (h) p = h.point.clone(); }
+    if (!p) {
+      const id = this.meta?.coneIds[i], V = this.frame?.vertices;
+      const R = id != null && V ? Math.hypot(V[3 * id], V[3 * id + 1], V[3 * id + 2]) : this.radius;
+      const o = this.ray.ray.origin, dir = this.ray.ray.direction, t = -o.dot(dir), c = o.clone().addScaledVector(dir, t), dd = c.length();
+      p = dd < R ? c.addScaledVector(dir, -Math.sqrt(R * R - dd * dd)) : c; // front sphere hit, else the nearest point on the silhouette
+    }
+    // undo the display rotation (Rm is symmetric and orthogonal, so it is its own inverse)
+    const q = this.rot(new Float32Array([p.x, p.y, p.z]), 0), n = Math.hypot(q[0], q[1], q[2]);
+    if (!(n > 0)) return null;
+    const x = q[0] / n, y = q[1] / n, z = Math.min(q[2] / n, 1 - 1e-4);
+    return [x / (1 - z), y / (1 - z)];
+  }
   private keepOrbit = false;
 
   /** Back to the empty state (no flow shown). */

@@ -44,7 +44,7 @@ export class CfDiscs {
   private yaw = 0.6; private elev = 1.1; private zoom = 1;
   // draggable cone markers (shown while no flow is displayed, like the Python page's live preview)
   private mk: Mk[][] = [[], []]; private mkEls: HTMLDivElement[][] = [[], []];
-  markersOn = false;
+  markersOn = true;
   setMarkers(on: boolean) { this.markersOn = on; this.draw(); }
   /** Called while a marker is dragged (fin = false) and on release (fin = true), with the new stereographic position. */
   onDragCone: ((i: number, pos: [number, number], fin: boolean) => void) | null = null;
@@ -129,7 +129,7 @@ export class CfDiscs {
 
   reset(meta: FlowMeta) {
     this.betas = meta.request.betas.slice(); this.positions = meta.request.positions.map(p => [...p]);
-    this.range = null; this.grid = null; this.hems = null; this.markersOn = false;
+    this.range = null; this.grid = null; this.hems = null;
     this.draw();
   }
 

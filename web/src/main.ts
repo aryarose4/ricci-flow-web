@@ -51,15 +51,20 @@ radios($('realizer'), 'realizer', [['true_flow', 'True Ricci Flow'], ['fast', 'F
 const setLevelUI = radios($('ressel'), 'ressel', [['coarse', 'Coarse'], ['medium', 'Medium'], ['fine', 'Fine'], ['extra', 'Extra Fine']], level, v => { level = v as Level; configChanged(); });
 const setSmoothUI = radios($('fpsmooth'), 'fpsmooth', [['off', 'Off'], ['on', 'On']], 'on', v => { smoothOn = v === 'on'; });
 radios($('shade'), 'shade', [['reflective', 'Reflective'], ['plain', 'Plain'], ['wireframe', 'Wireframe']], 'reflective', v => { view.shading = v as Shading; view.render(); });
-radios($('overlay'), 'overlay', [['none', 'None'], ['length', 'Length Fit'], ['gauss', 'Gaussian Curvature']], 'none', v => { $('sens').hidden = v === 'none'; view.setOverlay(v as Overlay); updateLegend(); });
+function setSensEnabled(on: boolean) {
+  const sens = $('sens'); sens.style.opacity = on ? '' : '.55'; sens.style.cursor = on ? '' : 'not-allowed';
+  sens.querySelectorAll('input').forEach(i => { i.disabled = !on; });
+}
+radios($('overlay'), 'overlay', [['none', 'None'], ['gauss', 'Curvature'], ['length', 'Length Fit']], 'gauss', v => { setSensEnabled(v !== 'none'); view.setOverlay(v as Overlay); updateLegend(); });
 radios($('curvscale'), 'curvscale', SENSITIVITY.map(([v, n]) => [v, n] as Opt), SENSITIVITY_DEFAULT, v => view.setSensitivity(parseFloat(v)));
+setSensEnabled(true); view.setOverlay('gauss');
 
 function updateLegend() {
   const lg = $('legend'), on = view.overlay !== 'none';
   lg.hidden = !on;
   if (!on) return;
   const [mlo, mhi] = view.legendRange;
-  $('lg-title').textContent = view.overlay === 'length' ? 'Length Fit' : 'Gaussian Curvature';
+  $('lg-title').textContent = view.overlay === 'length' ? 'Length Fit' : 'Curvature';
   $('lg-mid').textContent = 'Target';
   $('lg-lo').textContent = '−' + mlo.toPrecision(2); $('lg-hi').textContent = '+' + mhi.toPrecision(2);
 }
@@ -73,7 +78,6 @@ function rhoOf() { return (betas.reduce((a, b) => a + b, 0) - (betas.length - 2)
 function updateRho() {
   const r = rhoOf();
   $('rhoval').textContent = (r >= 0 ? '+' : '−') + Math.abs(r).toFixed(3);
-  $('rhonote').textContent = r > 0 ? '(sphere-like)' : r < 0 ? '(hyperbolic-like)' : '(flat)';
 }
 /** Any edit of the cones cancels a running flow and returns to the live preview (as on the Python page). */
 function configChanged() {
@@ -98,10 +102,11 @@ function buildSliders(n: number) {
 $('nsel').onchange = () => { betas = []; buildSliders(+($('nsel') as HTMLSelectElement).value); };
 cf.onDragCone = (i, pos, fin) => {
   positions[i] = [pos[0], pos[1]];
-  if (running || frames.length) toPreview();
+  if (running || frames.length || meta) { toPreview(true); $('st-l').textContent = ''; $('st-c').textContent = ''; } // keep the old surface up until the preview lands
   cf.setPreview(betas, positions); cf.setMarkers(true);
   requestPreview(!fin);   // live: throttled while dragging, latest wins
 };
+view.onDragCone = (i, pos, fin) => cf.onDragCone?.(i, pos, fin);
 
 // ---------- solver worker ----------
 const spawn = () => new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });
@@ -168,6 +173,7 @@ function onWorker(ev: MessageEvent<FromWorker>) {
     const sl = $('play') as HTMLInputElement; sl.max = String(frames.length - 1);
     $('loadpct').textContent = `${Math.round(100 * f.progress)}%`;
     ($('playbtn') as HTMLButtonElement).disabled = false; sl.disabled = false;
+    if (f.embedNotice) $('warn').textContent = f.embedNotice;
     player.show(f);
     if (f.quality) {
       setQuality(f.quality.label, f.quality.ok, f.quality.detail);
@@ -197,13 +203,15 @@ function subFrame(fr: Fr, to: Fr): FlowFrame {
   const mix1 = (a: Float32Array | undefined, b: Float32Array | undefined) => {
     if (!a || !b || a.length !== b.length) return b; const o = new Float32Array(b.length); for (let i = 0; i < o.length; i++) o[i] = (1 - s) * a[i] + s * b[i]; return o;
   };
-  return sf._sh = { ...to, vertices: flat(fr.V), rho: mix(A.rho, to.rho), t: mix(A.t, to.t)!, Kdef: mix1(A.Kdef, to.Kdef), Avert: mix1(A.Avert, to.Avert) };
+  return sf._sh = { ...to, vertices: flat(fr.V), rho: mix(A.rho, to.rho), t: mix(A.t, to.t)!, Kdef: mix1(A.Kdef, to.Kdef), Avert: mix1(A.Avert, to.Avert), blend: { a: A, b: to, s } };
 }
 function display(p: PFrame) {
   const fr = p as Fr, to = (fr.fp ? fr.fp.to : fr) as Fr;
   if (!meta) return;
   const shown: FlowFrame = fr.fp ? subFrame(fr, to) : to;
   view.setFrame(shown, frames[0]);
+  const tr = (window as unknown as { __trace?: unknown[] }).__trace; // test hook: per-display overlay stats
+  if (tr && meta) { const r = view.curv.compute(shown, frames[0], meta.coneIds); if (r) { let s = 0, n = 0, nan = 0; for (const x of r.faceT) { if (x === x) { s += Math.abs(x); n++; } else nan++; } tr.push({ t: to.t, rho: shown.rho, lrr: to.lenRelRms, poly: !!to.polytope, hasK: !!to.Kdef, k: frames.indexOf(to), sub: fr.fp ? `${fr.fp.i}/${fr.fp.n}` : '', mean: n ? s / n : NaN, nan, lo: r.lo, faceT: Array.from(r.faceT) }); } }
   if (cfShown !== to) { cf.setFrame(to); cfShown = to; }
   $('st-l').textContent = to.lenRelRms == null ? '' : (100 * to.lenRelRms).toFixed(2) + ' %';
   $('st-c').textContent = fmt(to.coneDefectErr);
@@ -211,21 +219,24 @@ function display(p: PFrame) {
     cur = Math.max(0, frames.indexOf(to));
     const sl = $('play') as HTMLInputElement; sl.value = String(cur);
     $('tval').textContent = `t = ${to.t.toPrecision(3)}`;
-    $('playlbl').textContent = `frame ${cur + 1} / ${meta.nFrames ?? frames.length}`;
+    $('playlbl').textContent = `frame ${cur + 1} / ${meta.nFrames ?? frames.length}` + embedTag(to);
   }
   updateLegend();
 }
 const player = new Player({
   frames: () => frames, set: display,
-  setSlider(k) { if (k < 0) return; cur = k; ($('play') as HTMLInputElement).value = String(k); const f = frames[k]; if (f) { $('tval').textContent = `t = ${f.t.toPrecision(3)}`; $('playlbl').textContent = `frame ${k + 1} / ${meta?.nFrames ?? frames.length}`; } },
+  setSlider(k) { if (k < 0) return; cur = k; ($('play') as HTMLInputElement).value = String(k); const f = frames[k]; if (f) { $('tval').textContent = `t = ${f.t.toPrecision(3)}`; $('playlbl').textContent = `frame ${k + 1} / ${meta?.nFrames ?? frames.length}` + embedTag(f); } },
   follow: () => true, smooth: () => smoothOn,
   setPlayLabel: t => { $('playbtn').textContent = t; },
   sliderValue: () => parseInt(($('play') as HTMLInputElement).value, 10),
 });
+/** rho < 0: say when the 3D view is not a faithful shape of this frame (as the Python page's frame label). */
+function embedTag(f: FlowFrame) { return !f.embedLost ? '' : f.embedState === 'searching' ? ' (no faithful 3D shape yet)' : ' (3D lost: last good shape)'; }
 function showFrame() { const f = frames[cur]; if (f) display(f); }
 function redraw() { if (frames.length) showFrame(); }
 
 function lock(haveFrames: boolean) {
+  $('playbox').hidden = running || !haveFrames; // the playback bar appears once a flow is complete
   ($('play') as HTMLInputElement).disabled = !haveFrames;
   ($('playbtn') as HTMLButtonElement).disabled = !haveFrames;
   ($('stop') as HTMLButtonElement).disabled = !running;
@@ -238,7 +249,7 @@ function finish(stopped: boolean) {
   if (!stopped) $('loadpct').textContent = '100%';
   if (stopped) player.stop(true);
   else if (player.busy()) { // let the smooth tail finish, but never rest mid-run
-    const last = frames.length; setTimeout(() => { if (frames.length === last && player.busy()) player.stop(true); showEnd(); }, 2500);
+    const last = frames.length; setTimeout(() => { if (frames.length === last && player.busy()) player.stop(true); showEnd(); }, 3750);
   } else showEnd();
 }
 /** The Python page ends a run on the final frame. */
@@ -265,7 +276,6 @@ function toPreview(keepView = false) {
 function start() {
   toPreview(true);
   const req: FlowRequest = { n: betas.length, betas: betas.slice(), positions: positions.map(p => [...p] as [number, number]), seed, level };
-  cf.setMarkers(false);
   runId++; running = true; t0 = performance.now(); wallMs = 0; lock(false);
   ($('stop') as HTMLButtonElement).disabled = false;
   $('loadpct').textContent = '0%';
@@ -277,11 +287,6 @@ $('stop').onclick = () => {
   if (!running) return;
   runId++; killWorker(); // a chunk cannot be interrupted: terminate and respawn
   finish(true);
-};
-$('reset').onclick = () => {
-  toPreview();
-  seed = 'gluing'; setSeedUI(seed); level = 'coarse'; setLevelUI(level); smoothOn = true; setSmoothUI('on');
-  ($('nsel') as HTMLSelectElement).value = '4'; betas = []; buildSliders(4);
 };
 
 // test hook for screenshots / automation
