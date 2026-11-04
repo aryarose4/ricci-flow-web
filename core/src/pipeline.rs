@@ -172,6 +172,8 @@ pub struct Session {
     prev: Option<Realized>,
     good: Option<Realized>,
     notice: Option<String>,
+    /// True Polytope seed: the polytope (mesh, 3D positions, creases)
+    pub true_poly: Option<crate::truepoly::TruePoly>,
 }
 
 fn rms(v: &[f64]) -> f64 {
@@ -189,11 +191,28 @@ impl Session {
             return Err(NEG_REFUSAL.into());
         }
         let neg = c_curv < 0.0;
-        let (mesh, flow_mesh) = seedmesh::build_mesh(&cfg.positions, &cfg.betas, cfg.level).map_err(|e| format!("mesh failed: {e}"))?;
-        let flow = DiscreteConeFlow::new(mesh.clone(), cfg.betas.clone(), FlowOptions { seed: cfg.seed, ..Default::default() });
+        let true_poly = if cfg.seed == Seed::TruePolytope {
+            if neg {
+                return Err("True Polytope needs rho > 0 (cone angles summing to a convex polytope)".into());
+            }
+            Some(crate::truepoly::build(&cfg.positions, &cfg.betas, cfg.level).map_err(|e| format!("mesh failed: {e}"))?)
+        } else {
+            None
+        };
+        let (mesh, flow_mesh) = match &true_poly {
+            Some(tp) => (tp.mesh.clone(), tp.flow_mesh.clone()),
+            None => seedmesh::build_mesh(&cfg.positions, &cfg.betas, cfg.level).map_err(|e| format!("mesh failed: {e}"))?,
+        };
+        let mut flow = DiscreteConeFlow::new(mesh.clone(), cfg.betas.clone(), FlowOptions { seed: cfg.seed, ..Default::default() });
+        if let Some(tp) = &true_poly {
+            flow.l0 = tp.l0.clone();
+        }
         let n_frames = flow.opts.times.len();
         let run = flow.start().map_err(|e| format!("seed metric failed: {e}"))?;
-        let seed_corners = run.flow.seed_corners.clone();
+        let seed_corners = match &true_poly {
+            Some(tp) => tp.corners.clone(),
+            None => run.flow.seed_corners.clone(),
+        };
         Ok(Session {
             cfg,
             mesh,
@@ -222,6 +241,7 @@ impl Session {
             prev: None,
             good: None,
             notice: None,
+            true_poly,
         })
     }
 
@@ -393,8 +413,26 @@ impl Session {
         }
     }
 
+    /// True Polytope frame 0: the polytope itself (scaled to the gauge), rigidly aligned to the fit.
+    fn apply_true_polytope(&self, row: &mut FrameOut) {
+        let Some(tp) = &self.true_poly else { return };
+        let e = &self.mesh.e;
+        let s = row.lengths.iter().zip(&tp.l0).map(|(l, l0)| l / l0).sum::<f64>() / e.len() as f64;
+        let xs: Vec<V3> = tp.x.iter().map(|q| realize::geom::scale(*q, s)).collect();
+        let x = realize::geom::kabsch_align(&xs, &row.vertices);
+        let rel = realize::geom::len_rel(&x, e, &row.lengths);
+        let dh = realize::geom::dihedrals(&x, &self.mesh.f);
+        row.len_rel_max = rel.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+        row.len_rel_rms = rms(&rel);
+        row.n_reflex = dh.iter().filter(|&&d| d < -1e-9).count();
+        row.min_dihedral = dh.iter().cloned().fold(f64::INFINITY, f64::min);
+        row.n_deep = dh.iter().filter(|&&d| d < -0.15).count();
+        row.vertices = x;
+        row.polytope = true;
+    }
+
     fn cf_for(&mut self, k: usize, t: f64) -> Option<&CfGrid> {
-        let poly = !self.seed_corners.is_empty() && k == 0 && t == 0.0;
+        let poly = !self.seed_corners.is_empty() && k == 0 && t == 0.0 && self.cfg.seed == Seed::Polytope;
         let slot = if poly { &mut self.cf_poly } else { &mut self.cf_main };
         if slot.is_none() {
             let mut sing = self.mesh.cones.clone();
@@ -411,8 +449,13 @@ impl Session {
 
     fn fill_cf(&mut self, row: &mut FrameOut) {
         if row.cf_w.is_empty() {
+            // True Polytope: u is relative to the polytope; add its fitted offset vs the round sphere
+            let u = match &self.true_poly {
+                Some(tp) => row.u.iter().zip(&tp.u_off).map(|(a, b)| a + b).collect(),
+                None => row.u.clone(),
+            };
             if let Some(g) = self.cf_for(row.k, row.t) {
-                row.cf_w = g.grid(&row.u);
+                row.cf_w = g.grid(&u);
             }
         }
     }
@@ -457,6 +500,7 @@ impl Session {
                     if self.cfg.seed == Seed::Polytope {
                         self.apply_polytope(&mut sd);
                     }
+                    self.apply_true_polytope(&mut sd);
                     self.fill_cf(&mut sd);
                     self.seed_preview = Some(sd);
                 }
@@ -496,6 +540,12 @@ impl Session {
                     // display values; quality reads the present q_ keys (has_q), never these
                     qrows[0].len_rel_rms = Some(r0.len_rel_rms);
                     rows[0] = r0;
+                }
+                if self.true_poly.is_some() {
+                    // frame 0 IS the polytope: exact lengths, no folds
+                    self.apply_true_polytope(&mut rows[0]);
+                    qrows[0].len_rel_max = Some(rows[0].len_rel_max);
+                    qrows[0].n_deep = rows[0].n_deep;
                 }
                 mark_seed_folds(&mut qrows, self.cfg.seed == Seed::Polytope);
                 for (r, q) in rows.iter_mut().zip(&qrows) {

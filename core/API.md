@@ -25,7 +25,7 @@ Frames stream one per chunk (no backward pass, no seed_frame, no Polytope hull).
 import init, { FlowSession, FlowFrame } from "./pkg/ricci_core.js";
 await init();                                   // or init({ module_or_path: bytes })
 
-type Seed = "gluing" | "smart" | "polytope";
+type Seed = "gluing" | "smart" | "polytope" | "true_polytope";
 type Level = "smoke" | "coarse" | "medium" | "fine" | "extra";   // page default: "coarse"
 
 declare class FlowSession {
@@ -52,7 +52,8 @@ declare class FlowSession {
   faces(): Uint32Array;              // nf*3, outward
   edges(): Uint32Array;              // ne*2, a < b; order of FlowFrame.lengths()
   cones(): Uint32Array;              // vertex id of cone i
-  seed_corners(): Uint32Array;       // Polytope seed's 4 extra corners (else empty)
+  seed_corners(): Uint32Array;       // Polytope / True Polytope seed's 4 extra corners (else empty)
+  crease_edges(): Uint32Array;       // True Polytope: polytope crease edges as vertex pairs [i0,j0,i1,j1,...] (else empty)
   seed_betas(): Float64Array;        // cap betas actually used (differ if caps were clamped)
   clamped(): boolean;                // overlapping caps were shrunk
 
@@ -85,7 +86,7 @@ declare class FlowFrame {
   gb_resid(): number;         // sum K - 4pi (|.| <= 1e-12)
   cone_defect_err(): number; rho(): number; k_dev_max(): number;
   seed_folds(): boolean;      // folds exempt from quality (Polytope opening run)
-  polytope(): boolean;        // frame shows the honest polytope (Polytope seed, t = 0)
+  polytope(): boolean;        // frame shows the honest polytope (Polytope seed, t = 0; True Polytope frame 0)
   warning(): string | undefined;
   /** rho < 0 tracking (rho > 0: "", false, NaN, NaN):
    *  "searching" (nothing passed yet; vertices = current failed attempt) | "following" | "suspect" (one bad

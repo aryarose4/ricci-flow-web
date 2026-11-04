@@ -13,7 +13,7 @@ fn flatf(v: &[[usize; 3]]) -> Vec<u32> {
 
 /// `FlowSession(positions, betas, seed, level)`: positions flat `[re0, im0, re1, im1, ...]` (cone
 /// points in the complex plane), `betas` = cone angle / 2 pi in [0.05, 0.99], seed
-/// "gluing" | "smart" | "polytope", level "smoke" | "coarse" | "medium" | "fine" | "extra".
+/// "gluing" | "smart" | "polytope" | "true_polytope", level "smoke" | "coarse" | "medium" | "fine" | "extra".
 /// Throws (a string) for rho <= 0, bad betas, or a mesh failure.
 #[wasm_bindgen]
 pub struct FlowSession {
@@ -24,7 +24,7 @@ pub struct FlowSession {
 impl FlowSession {
     #[wasm_bindgen(constructor)]
     pub fn new(positions: &[f64], betas: &[f64], seed: &str, level: &str) -> Result<FlowSession, JsValue> {
-        let seed = Seed::parse(seed).ok_or_else(|| JsValue::from_str("seed must be gluing | smart | polytope"))?;
+        let seed = Seed::parse(seed).ok_or_else(|| JsValue::from_str("seed must be gluing | smart | polytope | true_polytope"))?;
         let level = page_level(level).ok_or_else(|| JsValue::from_str("unknown mesh level"))?;
         if positions.len() != 2 * betas.len() {
             return Err(JsValue::from_str("positions must hold 2 numbers per beta"));
@@ -87,6 +87,14 @@ impl FlowSession {
     /// Polytope seed's 4 extra corner vertex ids (empty otherwise)
     pub fn seed_corners(&self) -> Vec<u32> {
         self.s.seed_corners.iter().map(|&x| x as u32).collect()
+    }
+    /// True Polytope seed: mesh edges on the polytope creases, flat `[i0, j0, i1, j1, ...]`
+    /// (vertex ids; empty for other seeds)
+    pub fn crease_edges(&self) -> Vec<u32> {
+        match &self.s.true_poly {
+            Some(tp) => tp.crease_edges.iter().flat_map(|&k| self.s.mesh.e[k]).map(|v| v as u32).collect(),
+            None => vec![],
+        }
     }
     /// seed betas actually used for the cap mesh (differ from targets if caps were clamped)
     pub fn seed_betas(&self) -> Vec<f64> {
