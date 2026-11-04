@@ -86,7 +86,13 @@ view.onLegend = updateLegend;
 // ---------- cone controls ----------
 let betas: number[] = [], positions: [number, number][] = [];
 const defaultBetas = [0.6, 0.7, 0.5, 0.8, 0.7, 0.6, 0.5, 0.8];
-function ngon(n: number): [number, number][] { return Array.from({ length: n }, (_, i) => [0.7 * Math.cos(2 * Math.PI * i / n), 0.7 * Math.sin(2 * Math.PI * i / n)] as [number, number]); }
+/** 8 cones: cube vertices (octahedral symmetry), stereographic from the north pole. */
+function cube8(): [number, number][] {
+  const out: [number, number][] = [], c = 1 / Math.sqrt(3);
+  for (const z of [c, -c]) for (let k = 0; k < 4; k++) { const a = Math.PI / 4 + k * Math.PI / 2, r = Math.SQRT2 * c; out.push([r * Math.cos(a) / (1 - z), r * Math.sin(a) / (1 - z)]); }
+  return out;
+}
+function ngon(n: number): [number, number][] { if (n === 8) return cube8(); return Array.from({ length: n }, (_, i) => [0.7 * Math.cos(2 * Math.PI * i / n), 0.7 * Math.sin(2 * Math.PI * i / n)] as [number, number]); }
 function rhoOf() { return (betas.reduce((a, b) => a + b, 0) - (betas.length - 2)) / 2; }
 function updateRho() {
   const r = rhoOf();
@@ -251,7 +257,12 @@ const player = new Player({
   sliderValue: () => parseInt(($('play') as HTMLInputElement).value, 10),
 });
 /** rho < 0: say when the 3D view is not a faithful shape of this frame (as the Python page's frame label). */
-function embedTag(f: FlowFrame) { return !f.embedLost ? '' : f.embedState === 'searching' ? ' (no faithful 3D shape yet)' : ' (3D lost: last good shape)'; }
+function embedTag(f: FlowFrame) {
+  if (!f.embedLost) return '';
+  if (f.embedState === 'searching') return ' (no faithful 3D shape yet)';
+  // rho < 0 guarded march: the shown shape is this frame's fold-free best fit, not a frozen earlier one
+  return f.lenRelRms != null && f.lenRelRms === f.lenRelRms ? ` (3D not faithful: best fold-free shape, ${(100 * f.lenRelRms).toFixed(1)}% length error)` : ' (3D lost)';
+}
 function showFrame() { const f = frames[cur]; if (f) display(f); }
 function redraw() { if (frames.length) showFrame(); }
 

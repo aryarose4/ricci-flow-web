@@ -1,0 +1,5 @@
+{"schema":"result_block.v1","lane":"neg-forward","harness":"claude","branch":"lane/neg-forward","status":"candidate — pending user verification",
+ "acceptance":{"cargo_test_release":"pass","tsc":"pass","vite_build":"pass","wasm_pack":"pass","browser":"not run","medium":"not run"},
+ "headline":"rho<0 guarded fold-free forward march; shown shape is the live fit past failure with its true length/K errors",
+ "metrics":{"c4":{"base_failed_t":0.33,"new_failed_t":1.56,"deep_max":[0,0]},"n3":{"failed_t":[0.0041,0.0041],"deep_max":[0,0]},"mx":{"base_failed_t":0.718,"new_failed_t":0.33,"deep_max":[1,1],"wall_s":[22,96]}},
+ "files":["core/src/pipeline.rs","core/src/wasm.rs","core/examples/crumple.rs","web/src/wasmSolver.ts","web/src/main.ts","artifacts/neg-forward/**","PROGRESS_neg-forward.md"]}
