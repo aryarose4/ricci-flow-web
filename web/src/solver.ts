@@ -1,6 +1,6 @@
 // Compute interface. Solvers run inside the Web Worker (worker.ts) and stream frames to the UI.
 
-export type SeedSurface = 'gluing' | 'smart' | 'polytope';
+export type SeedSurface = 'gluing' | 'smart' | 'polytope' | 'true_polytope';
 
 export interface FlowRequest {
   n: number;

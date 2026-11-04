@@ -46,7 +46,17 @@ function radios(host: HTMLElement, name: string, opts: Opt[], init: string, onCh
   return (v: string) => { host.querySelectorAll('input').forEach(i => { i.checked = i.value === v; }); };
 }
 let seed: SeedSurface = 'gluing', level: Level = 'coarse', smoothOn = true;
-const setSeedUI = radios($('seed'), 'seed', [['gluing', 'Cone Gluing'], ['smart', 'Smart Seed'], ['polytope', 'Polytope']], seed, v => { seed = v as SeedSurface; configChanged(); });
+let seedNeg: boolean | null = null;
+/** True Polytope is rho > 0 only (the core refuses rho < 0): grey it out, and fall back to Polytope, when the cones force rho < 0. */
+function buildSeedUI() {
+  const neg = 2 - betas.reduce((a, b) => a + (1 - b), 0) < 0;
+  if (neg === seedNeg) return;
+  seedNeg = neg;
+  if (neg && seed === 'true_polytope') seed = 'polytope';
+  radios($('seed'), 'seed', [['gluing', 'Cone Gluing'], ['smart', 'Smart Seed'], ['polytope', 'Polytope'],
+    ['true_polytope', 'True Polytope', neg ? 'rho > 0 only (these cone angles give rho < 0)' : undefined]], seed, v => { seed = v as SeedSurface; configChanged(); });
+}
+const setSeedUI = (v: string) => { $('seed').querySelectorAll('input').forEach(i => { i.checked = i.value === v; }); };
 radios($('realizer'), 'realizer', [['true_flow', 'True Ricci Flow'], ['fast', 'Fast Uniformizer', 'not yet ported']], 'true_flow', () => { /* only True Ricci Flow is available */ });
 const setLevelUI = radios($('ressel'), 'ressel', [['coarse', 'Coarse'], ['medium', 'Medium'], ['fine', 'Fine'], ['extra', 'Extra Fine']], level, v => { level = v as Level; configChanged(); });
 const setSmoothUI = radios($('fpsmooth'), 'fpsmooth', [['off', 'Off'], ['on', 'On']], 'on', v => { smoothOn = v === 'on'; });
@@ -82,7 +92,7 @@ function updateRho() {
 /** Any edit of the cones cancels a running flow and returns to the live preview (as on the Python page). */
 function configChanged() {
   if (running || frames.length || meta) toPreview();
-  updateRho(); cf.setPreview(betas, positions); cf.setMarkers(true);
+  buildSeedUI(); updateRho(); cf.setPreview(betas, positions); cf.setMarkers(true);
   requestPreview(false);
 }
 let sliderEls: { sl: HTMLInputElement; lab: HTMLLabelElement }[] = [];
