@@ -57,7 +57,10 @@ function buildSeedUI() {
     ['true_polytope', 'True Polytope', neg ? 'rho > 0 only (these cone angles give rho < 0)' : undefined]], seed, v => { seed = v as SeedSurface; configChanged(); });
 }
 const setSeedUI = (v: string) => { $('seed').querySelectorAll('input').forEach(i => { i.checked = i.value === v; }); };
-radios($('realizer'), 'realizer', [['true_flow', 'True Ricci Flow'], ['fast', 'Fast Uniformizer', 'not yet ported']], 'true_flow', () => { /* only True Ricci Flow is available */ });
+let mode: 'true_flow' | 'fast' = 'true_flow';
+/** Fast Uniformizer ignores the Initial Condition (it always starts from the flat-cone far field). */
+function setSeedEnabled(on: boolean) { const h = $('seed'); h.style.opacity = on ? '' : '.55'; h.title = on ? '' : 'Fast Uniformizer always starts from the flat-cone far field'; h.querySelectorAll('input').forEach(i => { i.disabled = !on || (i.value === 'true_polytope' && !!seedNeg); }); }
+const setModeUI = radios($('realizer'), 'realizer', [['true_flow', 'True Ricci Flow'], ['fast', 'Fast Uniformizer']], mode, v => { mode = v as typeof mode; setSeedEnabled(mode !== 'fast'); configChanged(); });
 const setLevelUI = radios($('ressel'), 'ressel', [['coarse', 'Coarse'], ['medium', 'Medium'], ['fine', 'Fine'], ['extra', 'Extra Fine']], level, v => { level = v as Level; configChanged(); });
 const setSmoothUI = radios($('fpsmooth'), 'fpsmooth', [['off', 'Off'], ['on', 'On']], 'on', v => { smoothOn = v === 'on'; });
 radios($('shade'), 'shade', [['reflective', 'Reflective'], ['plain', 'Plain'], ['wireframe', 'Wireframe']], 'reflective', v => { view.shading = v as Shading; view.render(); });
@@ -82,7 +85,7 @@ view.onLegend = updateLegend;
 
 // ---------- cone controls ----------
 let betas: number[] = [], positions: [number, number][] = [];
-const defaultBetas = [0.6, 0.7, 0.5, 0.8, 0.7];
+const defaultBetas = [0.6, 0.7, 0.5, 0.8, 0.7, 0.6, 0.5, 0.8];
 function ngon(n: number): [number, number][] { return Array.from({ length: n }, (_, i) => [0.7 * Math.cos(2 * Math.PI * i / n), 0.7 * Math.sin(2 * Math.PI * i / n)] as [number, number]); }
 function rhoOf() { return (betas.reduce((a, b) => a + b, 0) - (betas.length - 2)) / 2; }
 function updateRho() {
@@ -92,19 +95,24 @@ function updateRho() {
 /** Any edit of the cones cancels a running flow and returns to the live preview (as on the Python page). */
 function configChanged() {
   if (running || frames.length || meta) toPreview();
-  buildSeedUI(); updateRho(); cf.setPreview(betas, positions); cf.setMarkers(true);
+  buildSeedUI(); setSeedEnabled(mode !== 'fast'); updateRho(); cf.setPreview(betas, positions); cf.setMarkers(true);
   requestPreview(false);
 }
 let sliderEls: { sl: HTMLInputElement; lab: HTMLLabelElement }[] = [];
 function buildSliders(n: number) {
   const host = $('sliders'); host.textContent = ''; sliderEls = [];
-  betas = Array.from({ length: n }, (_, i) => betas[i] ?? defaultBetas[i % 5]);
+  betas = Array.from({ length: n }, (_, i) => betas[i] ?? defaultBetas[i % defaultBetas.length]);
+  if (n === 2) betas[1] = betas[0]; // two cones: only equal angles admit a metric (football), so the sliders move together
   positions = ngon(n);
   for (let i = 0; i < n; i++) {
     const row = document.createElement('div'); row.className = 'row';
     const lab = document.createElement('label'); lab.textContent = `β = ${betas[i].toFixed(3)}`;
     const sl = document.createElement('input'); sl.type = 'range'; sl.min = '0.05'; sl.max = '0.95'; sl.step = '0.01'; sl.value = String(betas[i]);
-    sl.oninput = () => { betas[i] = +sl.value; lab.textContent = `β = ${betas[i].toFixed(3)}`; configChanged(); };
+    sl.oninput = () => {
+      betas[i] = +sl.value; lab.textContent = `β = ${betas[i].toFixed(3)}`;
+      if (n === 2) { const j = 1 - i; betas[j] = betas[i]; sliderEls[j].sl.value = sl.value; sliderEls[j].lab.textContent = lab.textContent; }
+      configChanged();
+    };
     row.append(lab, sl); host.appendChild(row); sliderEls.push({ sl, lab });
   }
   configChanged();
@@ -131,7 +139,7 @@ worker.onmessage = onWorker;
 const pworker = spawn();
 let pId = 0, pBusy = false, pDirty = false, pTimer: number | null = null, pLast = 0, pReq: FlowRequest | null = null;
 let previewMs = NaN;
-function currentReq(): FlowRequest { return { n: betas.length, betas: betas.slice(), positions: positions.map(p => [...p] as [number, number]), seed, level }; }
+function currentReq(): FlowRequest { return { n: betas.length, betas: betas.slice(), positions: positions.map(p => [...p] as [number, number]), seed, level, mode }; }
 /** Debounced (150 ms) for sliders/radios, throttled (~60 ms) during cone drags; one request in flight, latest wins. */
 function requestPreview(drag: boolean) {
   if (running) return;
@@ -155,7 +163,7 @@ pworker.onmessage = (ev: MessageEvent<FromWorker>) => {
     previewMs = m.data.ms; view.setPreview(m.data, pReq!);
     $('st-v').textContent = String(m.data.vertices.length / 3); $('st-e').textContent = String(m.data.edges.length / 2); $('st-f').textContent = String(m.data.faces.length / 3);
     $('warn').textContent = m.data.clamped ? 'Overlapping cone caps were shrunk' : '';
-  } else { view.clear(); $('warn').textContent = ''; }
+  } else { view.clear(); $('warn').textContent = m.message; }
 };
 
 /** A chunk of the solver cannot be interrupted, so Stop terminates the worker and starts a fresh one. */
@@ -230,7 +238,7 @@ function display(p: PFrame) {
   if (!fr.fp) {
     cur = Math.max(0, frames.indexOf(to));
     const sl = $('play') as HTMLInputElement; sl.value = String(cur);
-    $('tval').textContent = `t = ${to.t.toPrecision(3)}`;
+    $('tval').textContent = to.fastStats ? 'uniformized (Fast)' : `t = ${to.t.toPrecision(3)}`;
     $('playlbl').textContent = `frame ${cur + 1} / ${meta.nFrames ?? frames.length}` + embedTag(to);
   }
   updateLegend();
@@ -257,7 +265,9 @@ function lock(haveFrames: boolean) {
 function finish(stopped: boolean) {
   running = false; wallMs = performance.now() - t0; lock(frames.length > 0);
   if (!frames.length) { setStatus(stopped ? 'Stopped.' : 'Done: no frames.'); return; }
-  setStatus(stopped ? `Stopped at frame ${cur + 1}.` : `Done: ${frames.length} frames, t = 0 .. ${frames[frames.length - 1].t.toPrecision(3)}.`);
+  const fl = frames[frames.length - 1], fs = fl.fastStats;
+  setStatus(stopped ? `Stopped at frame ${cur + 1}.` : fs ? `Done (Fast Uniformizer): rho = ${fmt(fl.rho)}, ${fs[0]} implicit steps / ${fs[1]} Newton iterations from the far field; stationary residual ${fmt(fs[3])}, Gauss-Bonnet ${fmt(fl.gbError)}, cone defect err ${fmt(fl.coneDefectErr)}; ${(wallMs / 1000).toFixed(2)} s.`
+    : `Done: ${frames.length} frames, t = 0 .. ${fl.t.toPrecision(3)}.`);
   if (!stopped) $('loadpct').textContent = '100%';
   if (stopped) player.stop(true);
   else if (player.busy()) { // let the smooth tail finish, but never rest mid-run
@@ -287,7 +297,7 @@ function toPreview(keepView = false) {
 
 function start() {
   toPreview(true);
-  const req: FlowRequest = { n: betas.length, betas: betas.slice(), positions: positions.map(p => [...p] as [number, number]), seed, level };
+  const req = currentReq();
   runId++; running = true; t0 = performance.now(); wallMs = 0; lock(false);
   ($('stop') as HTMLButtonElement).disabled = false;
   $('loadpct').textContent = '0%';
@@ -302,7 +312,8 @@ $('stop').onclick = () => {
 };
 
 // test hook for screenshots / automation
-function setConfig(c: { positions?: number[][]; betas?: number[]; seed?: SeedSurface; level?: Level; smooth?: boolean }) {
+function setConfig(c: { positions?: number[][]; betas?: number[]; seed?: SeedSurface; level?: Level; smooth?: boolean; mode?: 'true_flow' | 'fast' }) {
+  if (c.mode) { mode = c.mode; setModeUI(mode); setSeedEnabled(mode !== 'fast'); }
   if (c.betas) {
     ($('nsel') as HTMLSelectElement).value = String(c.betas.length); betas = c.betas.slice(); buildSliders(c.betas.length);
     betas.forEach((b, i) => { sliderEls[i].sl.value = String(b); sliderEls[i].lab.textContent = `β = ${b.toFixed(3)}`; });

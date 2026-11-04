@@ -25,7 +25,8 @@ export class WasmSolver implements Solver {
     const pos = new Float64Array(req.positions.flat());
     const s = new FlowSession(pos, new Float64Array(req.betas), req.seed, req.level ?? 'coarse');
     // anti-crumple defaults (lane anti-crumple): rescue a folded final frame and a light fold prior; rho > 0 only
-    if (2 - req.betas.reduce((a, b) => a + (1 - b), 0) > 0) { s.set_rescue_final(4); s.set_fold_prior(3e-4, 1.0, false); s.set_forward(1e-2, 4); }
+    if (req.mode === 'fast') s.set_fast();
+    else if (2 - req.betas.reduce((a, b) => a + (1 - b), 0) > 0) { s.set_rescue_final(4); s.set_fold_prior(3e-4, 1.0, false); s.set_forward(1e-2, 4); }
     try {
       const faces = s.faces();
       let sent = false, faces0: Uint32Array | null = null;
@@ -47,6 +48,7 @@ export class WasmSolver implements Solver {
         const quality: Quality | null = last && lbl ? { label: lbl, ok: s.quality_ok() ?? false, detail: s.quality_detail() ?? undefined } : null;
         const fr = convert(f, faces0!, s.progress(), quality);
         if (s.negative()) fr.embedNotice = s.embed_notice() ?? null;
+        if (req.mode === 'fast') fr.fastStats = Array.from(s.fast_stats());
         onFrame(fr);
         f.free();
       }

@@ -142,6 +142,10 @@ pub enum Phase {
     Emit,
     /// rho < 0: flow one frame and realize it forward (continuation + tracker)
     Track,
+    /// Fast Uniformizer: direct implicit solve for the uniformized metric
+    FastSolve,
+    /// Fast Uniformizer: 3D realization of that one metric
+    FastRealize,
     Done,
 }
 
@@ -154,6 +158,8 @@ impl Phase {
             Phase::Finalize => "polytope frame / quality",
             Phase::Emit => "streaming frames",
             Phase::Track => "flowing (true Ricci flow, rho < 0: implicit BDF2 metric, 3D shape by continuation)",
+            Phase::FastSolve => "Fast Uniformizer: solving for the uniformized metric (implicit Newton from the far field)",
+            Phase::FastRealize => "Fast Uniformizer: building the 3D surface",
             Phase::Done => "done",
         }
     }
@@ -202,6 +208,10 @@ pub struct Session {
     pub n_from_backward: usize,
     /// rho < 0: previous intrinsic frame (for the opt-in hidden metrics)
     prev_fr: Option<Frame>,
+    /// Fast Uniformizer mode (see [`Session::set_fast`])
+    pub fast: bool,
+    /// Fast Uniformizer: intrinsic solve statistics
+    pub unif: Option<crate::fastunif::UnifStats>,
 }
 
 fn rms(v: &[f64]) -> f64 {
@@ -218,6 +228,7 @@ impl Session {
         if !(c_curv.abs() > 1e-12) {
             return Err(NEG_REFUSAL.into());
         }
+        crate::fastunif::admissibility(&cfg.betas)?;
         let neg = c_curv < 0.0;
         let true_poly = if cfg.seed == Seed::TruePolytope {
             if neg {
@@ -276,6 +287,8 @@ impl Session {
             rescued: false,
             n_from_backward: 0,
             prev_fr: None,
+            fast: false,
+            unif: None,
         })
     }
 
@@ -290,7 +303,7 @@ impl Session {
     }
     /// rho of the uniformized metric (known once the flow frames are computed; NaN before).
     pub fn rho(&self) -> f64 {
-        if self.neg {
+        if self.neg && !self.fast {
             return if self.phase == Phase::Track { f64::NAN } else { self.rows.last().map_or(f64::NAN, |r| r.rho) };
         }
         self.frames.last().map_or(f64::NAN, |f| f.diag.rho)
@@ -318,9 +331,11 @@ impl Session {
             Phase::BackwardInit => 0.33,
             Phase::Backward => 0.33 + 0.55 * self.bw.as_ref().map_or_else(|| self.fw.as_ref().map_or(0.0, |f| f.done() as f64), |b| b.done() as f64) / n,
             Phase::Finalize => 0.9,
-            Phase::Emit if self.neg => 0.99,
+            Phase::Emit if self.neg || self.fast => 0.99,
             Phase::Emit => 0.92 + 0.08 * self.emitted as f64 / n,
             Phase::Track => 0.98 * self.rows.len() as f64 / n,
+            Phase::FastSolve => 0.05,
+            Phase::FastRealize => 0.5,
             Phase::Done => 1.0,
         }
     }
@@ -465,6 +480,79 @@ impl Session {
         Ok(true)
     }
 
+    /// Fast Uniformizer: switch this (not yet stepped) session to the direct solve.  The seed
+    /// metric is ignored: the solve always starts from the flat-cone far field `v_asymp`.
+    pub fn set_fast(&mut self) {
+        self.fast = true;
+        self.phase = Phase::FastSolve;
+        self.n_frames = 1;
+        self.seed_corners.clear();
+    }
+
+    /// Fast Uniformizer: realize the uniformized metric (rho > 0: cold Fast fits from the cone-cap
+    /// seed, a few seed scales, cleanest kept; rho < 0: the tracker's multi-start cold fit and its
+    /// curvature mismatch, best uniform-curvature attempt, NOT certified as an embedding).
+    fn fast_realize(&mut self) {
+        let mesh = &self.mesh;
+        let rm = RealizeMesh::new(mesh.f.clone(), mesh.e.clone(), mesh.cones.clone(), mesh.nv());
+        let (x0, kind) = realize::fast_seed(&mesh.y, &mesh.f, &mesh.cones, &self.cfg.betas);
+        if kind != SeedKind::Caps {
+            self.warning = Some("cone-cap seed unavailable: started from the bare sphere".into());
+        }
+        let rlz = FastRealizer::new(rm, x0, kind);
+        let fr = self.frames[0].clone();
+        let mut row;
+        let mut lost = false;
+        if self.neg {
+            let tr = Tracker::new(&mesh.f, &mesh.cones);
+            let (rf, m) = tracker::cold_start(&rlz, &tr, &fr.l, &fr.k_defect, &fr.a_vertex, fr.diag.rho);
+            let reasons = tr.reasons(&m, rf.ok);
+            lost = !reasons.is_empty();
+            row = self.row_of(&fr, &rf);
+            row.len_rel_max = m.len_rel_max;
+            row.len_rel_rms = m.len_rel_rms;
+            row.k_err_signed = m.k_err_signed;
+            row.k_err_rms = m.k_err_rms;
+            row.embed_state = if lost { "failed" } else { "following" }.into();
+            row.embed_lost = lost;
+            if lost {
+                self.notice = Some(format!(
+                    "Fast Uniformizer (rho < 0): no faithful 3D shape found ({}); showing the best attempt",
+                    reasons.join("; ")
+                ));
+            }
+        } else {
+            let mut best = rlz.realize(&fr.l, None);
+            for s in [1.0, 0.9, 1.1] {
+                if best.ok && realize::n_deep_folds(&best.x, &mesh.f, 0.15) == 0 {
+                    break;
+                }
+                let xs: Vec<V3> = mesh.y.iter().map(|p| realize::geom::scale(*p, s)).collect();
+                let b = rlz.realize_cold_from(&fr.l, &xs);
+                if realize::cleaner_picks_b(&rlz, &best, &b) {
+                    best = b;
+                }
+            }
+            row = self.row_of(&fr, &best);
+        }
+        let q = FrameRow {
+            len_rel_max: Some(row.len_rel_max),
+            len_rel_rms: if self.neg { Some(row.len_rel_rms) } else { None },
+            n_deep: row.n_deep,
+            embed_lost: lost,
+            ..Default::default()
+        };
+        self.quality = flow_quality(&[q]).map(|mut q| {
+            if q.ok {
+                q.label = "Certified Target".into();
+                q.detail = "The 3D shape matches the uniformized metric (edge lengths within 1 % rms / 5 % max, no folds); NOT a certified embedding".into();
+            }
+            q
+        });
+        self.rlz = Some(rlz);
+        self.rows = vec![row];
+    }
+
     /// `polytope_vertices` applied to a row (Polytope seed, t = 0); false if the fit failed.
     fn apply_polytope(&self, row: &mut FrameOut) -> bool {
         let rlz = self.rlz.as_ref().unwrap();
@@ -535,6 +623,19 @@ impl Session {
     /// be taken with [`Session::next_frame`]).
     pub fn step(&mut self) -> Result<bool, String> {
         match self.phase {
+            Phase::FastSolve => {
+                let mut flow = self.run.take().unwrap().flow;
+                let (u, st) = crate::fastunif::uniformize(&mut flow)?;
+                self.stats_flow = Some(flow.stats.clone());
+                self.unif = Some(st);
+                let fr = flow.make_frame(0, 0.0, &u);
+                self.frames = vec![fr];
+                self.phase = Phase::FastRealize;
+            }
+            Phase::FastRealize => {
+                self.fast_realize();
+                self.phase = Phase::Emit;
+            }
             Phase::Track => {
                 if !self.track_step()? {
                     self.phase = if self.emitted >= self.rows.len() { Phase::Done } else { Phase::Emit };
