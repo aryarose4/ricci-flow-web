@@ -73,7 +73,11 @@ impl FlowSession {
         self.s.progress()
     }
     pub fn phase(&self) -> String {
-        self.s.phase().name().to_string()
+        let ph = self.s.phase();
+        if self.s.cfg.anti.forward.is_some() && matches!(ph, crate::pipeline::Phase::BackwardInit | crate::pipeline::Phase::Backward) {
+            return "loading the flow in 3D (forward from the starting shape)".to_string();
+        }
+        ph.name().to_string()
     }
     pub fn n_frames(&self) -> usize {
         self.s.n_frames()
