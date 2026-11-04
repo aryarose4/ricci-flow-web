@@ -146,60 +146,97 @@ function segEval(s: Plan, t: number): Cloud {
   return out;
 }
 
+/** Wall-clock player. Every TRUE-frame transition lasts FRAME_MS whether smooth is on or off (live backlog excepted); smooth only
+ *  adds intermediate frames, whose number is capped by what the measured display cost allows, and which are skipped (never stretched)
+ *  when a render is late. Driven by requestAnimationFrame, position = elapsed / FRAME_MS. */
+export const FRAME_MS = 450, LIVE_MS = 220, BACKLOG_MS = 60, COST_SAFETY = 1.6, MIN_STEP_MS = 16;
+interface Seg { A: PFrame; B: PFrame; t0: number; dur: number; n: number; pl: Plan | null; shown: number }
+export interface PlayStats { planMs: number[]; dispSub: number[]; dispTrue: number[]; nEval: number[] }
+
 export class Player {
   private lastReal: PFrame | null = null; private prevReal: PFrame | null = null;
-  private queue: PFrame[] = []; private cur: { A: PFrame; B: PFrame; n: number; i: number; pl: Plan | null } | null = null;
-  private timer: number | null = null; playing = false;
+  private queue: PFrame[] = []; private cur: Seg | null = null;
+  private raf: number | null = null; playing = false;
+  private cost = 8; // EMA of one synthesized-frame display (ms)
+  private plans = new WeakMap<PFrame, { pl: Plan; p: boolean; n: boolean }>();
+  stats: PlayStats = { planMs: [], dispSub: [], dispTrue: [], nEval: [] };
   constructor(private H: Host) {}
 
   private idx = (fr: PFrame) => this.H.frames().indexOf(fr);
   private anchor(fr: PFrame) { const F = this.H.frames(), k = F.indexOf(fr); this.lastReal = fr; this.prevReal = k > 0 ? F[k - 1] : null; }
   private synth(B: PFrame, V: Cloud, A: PFrame, i: number, n: number): PFrame { return { ...B, V, fp: { from: A, to: B, i, n } }; }
-  clear() { if (this.timer != null) { clearInterval(this.timer); this.timer = null; } this.cur = null; this.queue = []; this.playing = false; this.H.setPlayLabel('Play'); }
-  busy() { return this.timer != null; }
-
-  private tick() {
-    const H = this.H;
-    if (!this.cur) {
-      if (!this.queue.length) { this.clear(); if (this.lastReal && H.follow()) H.setSlider(this.idx(this.lastReal)); return; }
-      const B = this.queue.shift()!, A = this.lastReal!; let n = 1, pl: Plan | null = null;
-      if (H.smooth() && A && A.V.length === B.V.length && (this.playing || this.queue.length <= 4)) { // backlog: one tick per frame
-        const P = this.prevReal && this.prevReal.V.length === A.V.length ? this.prevReal : null;
-        const N = this.queue.length && this.queue[0].V.length === B.V.length ? this.queue[0] : null;
-        pl = seg(P, A, B, N); n = pl.n;
-      }
-      this.cur = { A, B, n, i: 0, pl };
-    }
-    const c = this.cur; c.i++;
-    const ia = this.idx(c.A), ib = this.idx(c.B);
-    if (c.i >= c.n || !c.pl) { this.anchor(c.B); H.set(c.B); if (H.follow()) H.setSlider(ib); this.cur = null; return; }
-    H.set(this.synth(c.B, segEval(c.pl, c.i / c.n), c.A, c.i, c.n));
-    if (H.follow()) H.setSlider(2 * c.i >= c.n ? ib : ia); // nearest TRUE frame, monotone
+  private put(f: PFrame, sub: boolean) {
+    const t = performance.now(); this.H.set(f); const d = performance.now() - t;
+    if (sub) { this.cost = 0.8 * this.cost + 0.2 * d; this.stats.dispSub.push(d); } else this.stats.dispTrue.push(d);
   }
-  private pump() { if (this.timer == null) this.timer = window.setInterval(() => this.tick(), TICK_MS); }
+  clear() { if (this.raf != null) { cancelAnimationFrame(this.raf); this.raf = null; } this.cur = null; this.queue = []; this.playing = false; this.H.setPlayLabel('Play'); }
+  busy() { return this.raf != null; }
+
+  /** Start the next queued segment at time t0. */
+  private begin(t0: number): boolean {
+    const H = this.H; if (!this.queue.length || !this.lastReal) return false;
+    const B = this.queue.shift()!, A = this.lastReal, backlog = !this.playing && this.queue.length > 4;
+    let pl: Plan | null = null, n = 1;
+    if (H.smooth() && A.V.length === B.V.length && !backlog) {
+      const P = this.prevReal && this.prevReal.V.length === A.V.length ? this.prevReal : null;
+      const N = this.queue.length && this.queue[0].V.length === B.V.length ? this.queue[0] : null;
+      const hit = this.plans.get(B);
+      if (hit && hit.p === !!P && hit.n === !!N) pl = hit.pl;
+      else { const t = performance.now(); pl = seg(P, A, B, N); this.stats.planMs.push(performance.now() - t); this.plans.set(B, { pl, p: !!P, n: !!N }); }
+    }
+    const dur = this.playing ? FRAME_MS : backlog ? BACKLOG_MS : LIVE_MS;
+    if (pl && pl.n > 1) n = Math.max(1, Math.min(pl.n, Math.floor(dur / Math.max(this.cost * COST_SAFETY, MIN_STEP_MS))));
+    this.cur = { A, B, t0, dur, n, pl: n > 1 ? pl : null, shown: 0 };
+    if (n > 1) this.stats.nEval.push(n);
+    return true;
+  }
+  private finishSeg() {
+    const c = this.cur!; this.anchor(c.B); this.put(c.B, false); if (this.H.follow()) this.H.setSlider(this.idx(c.B)); this.cur = null;
+  }
+  private frame = (now: number) => {
+    this.raf = null; const H = this.H;
+    if (!this.cur && !this.begin(now)) { this.clear(); if (this.lastReal && H.follow()) H.setSlider(this.idx(this.lastReal)); return; }
+    for (;;) { // wall-clock catch-up: finish every segment that is over (a late render skips frames, it does not stretch time)
+      const c = this.cur!;
+      if (now - c.t0 < c.dur) break;
+      const end = c.t0 + c.dur; this.finishSeg();
+      if (!this.begin(now - end > 3 * c.dur ? now : end)) { this.clear(); if (this.lastReal && H.follow()) H.setSlider(this.idx(this.lastReal)); return; }
+    }
+    const c = this.cur!;
+    if (c.pl) {
+      const i = Math.min(c.n - 1, Math.round((now - c.t0) / c.dur * c.n));
+      if (i > c.shown) {
+        c.shown = i;
+        this.put(this.synth(c.B, segEval(c.pl, i / c.n), c.A, i, c.n), true);
+        if (H.follow()) H.setSlider(2 * i >= c.n ? this.idx(c.B) : this.idx(c.A));
+      }
+    } else if (c.shown === 0 && H.follow()) { c.shown = 1; H.setSlider(this.idx(c.A)); } // smooth off: hold A (already shown) until the step
+    this.raf = requestAnimationFrame(this.frame);
+  };
+  private pump() { if (this.raf == null) this.raf = requestAnimationFrame(this.frame); }
 
   /** A newly received TRUE frame (live stream). */
   show(fr: PFrame) {
     if (!this.H.smooth() || !this.lastReal || (!this.cur && !this.queue.length && this.lastReal.V.length !== fr.V.length)) { this.anchor(fr); this.H.set(fr); return; }
-    if (!this.cur && !this.queue.length && this.timer == null && prep(this.lastReal.V, fr).n <= 1) { this.anchor(fr); this.H.set(fr); return; }
+    if (!this.cur && !this.queue.length && this.raf == null && prep(this.lastReal.V, fr).n <= 1) { this.anchor(fr); this.H.set(fr); return; }
     this.queue.push(fr); this.pump();
   }
   stop(snap: boolean) {
-    const had = this.timer != null, q = this.queue.slice();
+    const had = this.raf != null, q = this.queue.slice();
     if (this.cur) q.unshift(this.cur.B);
     this.clear();
     if (snap && had) { const f = q.length ? q[q.length - 1] : null; if (f) { this.anchor(f); this.H.set(f); } }
-    if (!snap) { this.lastReal = null; this.prevReal = null; }
+    if (!snap) { this.lastReal = null; this.prevReal = null; this.plans = new WeakMap(); }
   }
   play() {
     const H = this.H, fr = H.frames(); if (fr.length < 2) return;
     if (this.playing) { // pause: rest on a TRUE frame (nearest), never mid-motion
-      const c = this.cur; this.clear();
-      if (c) { const f = 2 * c.i >= c.n ? c.B : c.A; this.anchor(f); H.set(f); H.setSlider(this.idx(f)); }
+      const c = this.cur, now = performance.now(); this.clear();
+      if (c) { const f = 2 * (now - c.t0) >= c.dur ? c.B : c.A; this.anchor(f); H.set(f); H.setSlider(this.idx(f)); }
       return;
     }
     let k = H.sliderValue(); if (!(k >= 0) || k >= fr.length - 1) k = 0;
-    this.clear(); this.anchor(fr[k]); H.set(fr[k]); H.setSlider(k); this.queue = fr.slice(k + 1); this.playing = true; H.setPlayLabel('Pause'); this.pump();
+    this.clear(); this.anchor(fr[k]); H.set(fr[k]); H.setSlider(k); this.queue = fr.slice(k + 1); this.playing = true; H.setPlayLabel('Pause'); this.stats = { planMs: [], dispSub: [], dispTrue: [], nEval: [] }; this.pump();
   }
   /** The user moved the slider: drop any animation and re-anchor on that true frame. */
   seek(f: PFrame | undefined) { this.clear(); if (f) this.anchor(f); else { this.lastReal = null; this.prevReal = null; } }

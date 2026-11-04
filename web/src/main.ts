@@ -220,6 +220,8 @@ function display(p: PFrame) {
   if (!meta) return;
   const shown: FlowFrame = fr.fp ? subFrame(fr, to) : to;
   view.setFrame(shown, frames[0]);
+  const hk = (window as unknown as { __onDisplay?: (t: number, k: number, sub: boolean) => void }).__onDisplay; // test hook: display timing
+  if (hk) hk(performance.now(), frames.indexOf(to), !!fr.fp);
   const tr = (window as unknown as { __trace?: unknown[] }).__trace; // test hook: per-display overlay stats
   if (tr && meta) { const r = view.curv.compute(shown, frames[0], meta.coneIds); if (r) { let s = 0, n = 0, nan = 0; for (const x of r.faceT) { if (x === x) { s += Math.abs(x); n++; } else nan++; } tr.push({ t: to.t, rho: shown.rho, lrr: to.lenRelRms, poly: !!to.polytope, hasK: !!to.Kdef, k: frames.indexOf(to), sub: fr.fp ? `${fr.fp.i}/${fr.fp.n}` : '', mean: n ? s / n : NaN, nan, lo: r.lo, faceT: Array.from(r.faceT) }); } }
   if (cfShown !== to) { cf.setFrame(to); cfShown = to; }
@@ -259,7 +261,7 @@ function finish(stopped: boolean) {
   if (!stopped) $('loadpct').textContent = '100%';
   if (stopped) player.stop(true);
   else if (player.busy()) { // let the smooth tail finish, but never rest mid-run
-    const last = frames.length; setTimeout(() => { if (frames.length === last && player.busy()) player.stop(true); showEnd(); }, 3750);
+    const last = frames.length; setTimeout(() => { if (player.playing || frames.length !== last) return; if (player.busy()) player.stop(true); showEnd(); }, 3750); // never cut a user replay
   } else showEnd();
 }
 /** The Python page ends a run on the final frame. */
@@ -314,7 +316,7 @@ function setConfig(c: { positions?: number[][]; betas?: number[]; seed?: SeedSur
 (window as unknown as Record<string, unknown>).__flow = {
   frames: () => frames.length, running: () => running, setConfig, generate: start,
   seek: (k: number) => { player.seek(frames[Math.min(k, frames.length - 1)]); cur = Math.min(k, frames.length - 1); showFrame(); },
-  result: () => result, previewMs: () => previewMs, previewReady: () => !pBusy && pTimer == null && !pDirty, dragCone: (i: number, p: [number, number], fin: boolean) => cf.onDragCone?.(i, p, fin),
+  playStats: () => player.stats, result: () => result, previewMs: () => previewMs, previewReady: () => !pBusy && pTimer == null && !pDirty, dragCone: (i: number, p: [number, number], fin: boolean) => cf.onDragCone?.(i, p, fin),
   /** test: max |delta faceT| between consecutive linear sub-frames of frames k..k+1, old (B's Kdef) vs blended */
   faceTProbe: (k: number, n: number) => {
     const A = frames[k], B = frames[k + 1]; view.setOverlay('length');

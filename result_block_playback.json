@@ -1,0 +1,6 @@
+{"schema":"result_block.v1","lane":"playback","branch":"lane/playback","status":"candidate - pending user verification","harness":"claude",
+"measured":{"before_ms_per_true_frame":{"smooth_on":{"mean":174,"early":60,"late":288,"max":720},"smooth_off":{"mean":60,"early":60,"late":60,"max":80}},
+"after_ms_per_true_frame":{"smooth_on":{"mean":451.5,"early":452.5,"late":450,"max":484},"smooth_off":{"mean":451.5,"early":452.5,"late":450,"max":476}},
+"sub_frame_cost_ms":{"mean":"5-12","max":"24-39"},"page_errors":0,"tsc":"pass","vite_build":"pass"},
+"files":["web/src/playback.ts","web/src/main.ts","web/scripts/playback-timing.mjs","PROGRESS_playback.md"],
+"unresolved":["sub-frame count capped lower for big jumps","swiftshader only, no real GPU timing","FRAME_MS fixed 450"]}
