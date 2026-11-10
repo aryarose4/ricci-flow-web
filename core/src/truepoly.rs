@@ -186,6 +186,143 @@ pub fn solve_polytope(p: &[V3], betas: &[f64], corners: &[V3]) -> Result<(Vec<V3
     Ok((pts, r, err))
 }
 
+/// Angle defect at `apex` of the fan over the closed `link` polygon.
+fn apex_defect(apex: V3, link: &[V3]) -> f64 {
+    let m = link.len();
+    let mut ang = 0.0;
+    for k in 0..m {
+        let u = geom::sub(link[k], apex);
+        let v = geom::sub(link[(k + 1) % m], apex);
+        ang += geom::norm(geom::cross(u, v)).atan2(geom::dot(u, v));
+    }
+    2.0 * PI - ang
+}
+
+/// rho < 0 "true polyhedron": a STAR-SHAPED (radial-graph) closed polyhedron, hence embedded.
+/// Directions = cone directions + 4 farthest-point corners, plus the midpoint of every cone-cone
+/// edge of their spherical Delaunay triangulation (convex hull of the unit vectors), repeated until
+/// no two cones are adjacent.  Corners sit at radius 1; with every cone link made of corners only,
+/// each cone radius is an independent 1D equation (curvature of a pyramid apex over a fixed link,
+/// -> 2 pi as r -> inf), solved by bracketing + bisection.  The corners take the rest of the
+/// curvature (4 pi - sum < 0: saddles).  Returns (vertices: cones then corners, faces CCW from
+/// outside, cone radii, max cone curvature error).
+pub fn solve_star(p: &[V3], betas: &[f64]) -> Result<(Vec<V3>, Vec<[usize; 3]>, Vec<f64>, f64), String> {
+    let n = p.len();
+    let mut dirs: Vec<V3> = p.to_vec();
+    dirs.extend(extra_corners(p, 4));
+    let mut tri;
+    let mut rounds = 0;
+    loop {
+        tri = convex_hull(&dirs).ok_or("true polyhedron: direction hull failed")?.simplices;
+        let mut cc: Vec<(usize, usize)> = vec![];
+        for t in &tri {
+            for k in 0..3 {
+                let (a, b) = (t[k], t[(k + 1) % 3]);
+                if a < n && b < n {
+                    cc.push((a.min(b), a.max(b)));
+                }
+            }
+        }
+        if cc.is_empty() {
+            break;
+        }
+        rounds += 1;
+        if rounds > 8 {
+            return Err("true polyhedron: cones stay adjacent".into());
+        }
+        cc.sort();
+        cc.dedup();
+        for (a, b) in cc {
+            let m = geom::add(dirs[a], dirs[b]);
+            let l = geom::norm(m);
+            if l < 1e-9 {
+                return Err("true polyhedron: antipodal cones".into());
+            }
+            dirs.push(geom::scale(m, 1.0 / l));
+        }
+    }
+    let mut radii = vec![1.0; n];
+    let mut err = 0.0f64;
+    for i in 0..n {
+        // link of cone i, ordered around p_i
+        let mut nxt: HashMap<usize, usize> = HashMap::new();
+        for t in &tri {
+            for k in 0..3 {
+                if t[k] == i {
+                    nxt.insert(t[(k + 1) % 3], t[(k + 2) % 3]);
+                }
+            }
+        }
+        let s0 = *nxt.keys().min().ok_or("true polyhedron: isolated cone")?;
+        let mut link = vec![s0];
+        let mut a = nxt[&s0];
+        while a != s0 {
+            link.push(a);
+            a = *nxt.get(&a).ok_or("true polyhedron: open link")?;
+            if link.len() > nxt.len() {
+                return Err("true polyhedron: link not a cycle".into());
+            }
+        }
+        let lp: Vec<V3> = link.iter().map(|&j| dirs[j]).collect();
+        let tgt = 2.0 * PI * (1.0 - betas[i]);
+        let f = |r: f64| apex_defect(geom::scale(p[i], r), &lp) - tgt;
+        // bracket: grow r from 1 until the defect exceeds the target, or shrink it (shallow cone)
+        let (mut lo, mut hi);
+        if f(1.0) < 0.0 {
+            lo = 1.0;
+            hi = 1.25;
+            while f(hi) < 0.0 {
+                lo = hi;
+                hi *= 1.25;
+                if hi > 1e5 {
+                    return Err(format!("true polyhedron: cone {i} curvature not reached"));
+                }
+            }
+        } else {
+            hi = 1.0;
+            lo = 0.9;
+            while f(lo) > 0.0 {
+                hi = lo;
+                lo *= 0.9;
+                if lo < 0.3 {
+                    return Err(format!(
+                        "true polyhedron: cone {} (beta {:.2}) is too flat for its star-shaped link (smallest reachable curvature {:.3} > {:.3})",
+                        i + 1,
+                        betas[i],
+                        f(1.0) + tgt,
+                        tgt
+                    ));
+                }
+            }
+        }
+        for _ in 0..200 {
+            let mid = 0.5 * (lo + hi);
+            if mid <= lo || mid >= hi {
+                break;
+            }
+            if f(mid) < 0.0 {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        let r = if f(lo).abs() < f(hi).abs() { lo } else { hi };
+        radii[i] = r;
+        err = err.max(f(r).abs());
+    }
+    if err > 1e-9 {
+        return Err(format!("true polyhedron: cone curvatures not reached (error {err:.1e})"));
+    }
+    let pv: Vec<V3> = (0..dirs.len()).map(|j| if j < n { geom::scale(dirs[j], radii[j]) } else { dirs[j] }).collect();
+    for t in &tri {
+        let nn = geom::cross(geom::sub(pv[t[1]], pv[t[0]]), geom::sub(pv[t[2]], pv[t[0]]));
+        if geom::dot(nn, pv[t[0]]) <= 1e-12 * geom::norm(nn) {
+            return Err("true polyhedron: face not visible from the centre".into());
+        }
+    }
+    Ok((pv, tri, radii, err))
+}
+
 /// 2D Delaunay of points (lower hull of the lift); triangles CCW.
 fn delaunay2(q: &[[f64; 2]]) -> Option<Vec<[usize; 3]>> {
     let lift: Vec<V3> = q.iter().map(|a| [a[0], a[1], a[0] * a[0] + a[1] * a[1]]).collect();
@@ -255,7 +392,7 @@ pub fn build_opts(
                 Some(_) => break,
                 None => {
                     // radial p = target here, so the radial build is the pre-conformal seed
-                    tp.warning = Some(format!("True Polytope: conformal coordinates unavailable ({e}); using radial positions"));
+                    tp.warning = Some(format!("True Polytope: conformal coordinates unavailable ({e}); using radial positions (cone conformal positions approximate)"));
                     return Ok(tp);
                 }
             }
@@ -356,16 +493,25 @@ fn sphere_layout(y0: &[V3], e: &[[usize; 2]], l: &[f64]) -> Result<Vec<V3>, Stri
     let nv = y0.len();
     let mut y = y0.to_vec();
     const W: f64 = 10.0;
-    let mut last = f64::INFINITY;
-    for _ in 0..30 {
+    let cost = |y: &[V3]| -> f64 {
+        let mut ss = 0.0;
+        for (k, &[i, j]) in e.iter().enumerate() {
+            let r = geom::norm(geom::sub(y[i], y[j])) - l[k];
+            ss += r * r;
+        }
+        ss
+    };
+    // Levenberg-Marquardt damping (mu = 0 is the plain Gauss-Newton of the rho > 0 build): a far
+    // start (radial projection of long rho < 0 spikes) needs damped steps to avoid folding
+    let mut mu = 0.0;
+    let mut last = cost(&y);
+    for _ in 0..200 {
         let mut a = Coo::new(3 * nv);
         let mut g = vec![0.0; 3 * nv];
-        let mut ss = 0.0;
         for (k, &[i, j]) in e.iter().enumerate() {
             let d = geom::sub(y[i], y[j]);
             let dn = geom::norm(d);
             let r = dn - l[k];
-            ss += r * r;
             let jv = geom::scale(d, 1.0 / dn);
             for a1 in 0..3 {
                 for b1 in 0..3 {
@@ -390,16 +536,44 @@ fn sphere_layout(y0: &[V3], e: &[[usize; 2]], l: &[f64]) -> Result<Vec<V3>, Stri
                 g[3 * v + a1] += jv[a1] * r;
             }
         }
-        let dx = SparseLu::factor(&a)?.solve(&g);
-        for v in 0..nv {
-            let q = [y[v][0] - dx[3 * v], y[v][1] - dx[3 * v + 1], y[v][2] - dx[3 * v + 2]];
-            y[v] = geom::scale(q, 1.0 / geom::norm(q));
+        let lu_base = a;
+        let mut accepted = false;
+        let mut step = 0.0;
+        for _ in 0..30 {
+            let mut am = lu_base.clone();
+            if mu > 0.0 {
+                for k in 0..3 * nv {
+                    am.push(k, k, mu);
+                }
+            }
+            let dx = SparseLu::factor(&am)?.solve(&g);
+            let yn: Vec<V3> = (0..nv)
+                .map(|v| {
+                    let q = [y[v][0] - dx[3 * v], y[v][1] - dx[3 * v + 1], y[v][2] - dx[3 * v + 2]];
+                    geom::scale(q, 1.0 / geom::norm(q))
+                })
+                .collect();
+            let c = cost(&yn);
+            if c.is_finite() && c <= last * (1.0 + 1e-12) {
+                step = dx.iter().fold(0.0f64, |m, x| m.max(x.abs()));
+                let dec = last - c;
+                y = yn;
+                mu *= 0.3;
+                if mu < 1e-10 {
+                    mu = 0.0;
+                }
+                accepted = true;
+                if step < 1e-11 || dec.abs() < 1e-14 * last.max(1e-30) {
+                    return Ok(y);
+                }
+                last = c;
+                break;
+            }
+            mu = if mu == 0.0 { 1e-4 } else { mu * 10.0 };
         }
-        let step = dx.iter().fold(0.0f64, |m, x| m.max(x.abs()));
-        if step < 1e-11 || (last - ss).abs() < 1e-14 * last.max(1e-30) {
+        if !accepted || step < 1e-11 {
             break;
         }
-        last = ss;
     }
     Ok(y)
 }
@@ -490,31 +664,48 @@ pub fn fit_mobius(src: &[V3], dst: &[V3]) -> [C; 4] {
 fn build_raw(p: &[V3], betas: &[f64], target_nv: f64) -> Result<TruePoly, String> {
     let n = p.len();
     let p = p.to_vec();
-    let cor = extra_corners(&p, 4);
-    let (pv, radii, defect_err) = solve_polytope(&p, betas, &cor)?;
-    let nvp = pv.len();
-    let hull = convex_hull(&pv).ok_or("polytope hull failed")?;
-    // merge coplanar hull triangles into facets
-    let nt = hull.simplices.len();
-    let mut gid = vec![usize::MAX; nt];
-    let mut groups: Vec<Vec<usize>> = vec![];
-    for t in 0..nt {
-        if gid[t] != usize::MAX {
-            continue;
-        }
-        let g = groups.len();
-        let mut mem = vec![];
-        for s in t..nt {
-            if gid[s] == usize::MAX
-                && geom::dot(hull.normals[t], hull.normals[s]) > 1.0 - 1e-12
-                && (hull.offsets[t] - hull.offsets[s]).abs() < 1e-10
-            {
-                gid[s] = g;
-                mem.push(s);
+    let neg = betas.iter().map(|b| 2.0 * PI * (1.0 - b)).sum::<f64>() > 4.0 * PI;
+    let (pv, radii, defect_err, hull, groups) = if neg {
+        let (pv, simplices, radii, err) = solve_star(&p, betas)?;
+        let normals: Vec<V3> = simplices
+            .iter()
+            .map(|t| {
+                let nn = geom::cross(geom::sub(pv[t[1]], pv[t[0]]), geom::sub(pv[t[2]], pv[t[0]]));
+                geom::scale(nn, 1.0 / geom::norm(nn))
+            })
+            .collect();
+        let offsets = simplices.iter().zip(&normals).map(|(t, nn)| geom::dot(*nn, pv[t[0]])).collect();
+        // every triangle is its own facet (no coplanar merge: non-adjacent faces may share a plane)
+        let groups: Vec<Vec<usize>> = (0..simplices.len()).map(|t| vec![t]).collect();
+        (pv, radii, err, crate::hull::Hull { simplices, normals, offsets }, groups)
+    } else {
+        let cor = extra_corners(&p, 4);
+        let (pv, radii, defect_err) = solve_polytope(&p, betas, &cor)?;
+        let hull = convex_hull(&pv).ok_or("polytope hull failed")?;
+        // merge coplanar hull triangles into facets
+        let nt = hull.simplices.len();
+        let mut gid = vec![usize::MAX; nt];
+        let mut groups: Vec<Vec<usize>> = vec![];
+        for t in 0..nt {
+            if gid[t] != usize::MAX {
+                continue;
             }
+            let g = groups.len();
+            let mut mem = vec![];
+            for s in t..nt {
+                if gid[s] == usize::MAX
+                    && geom::dot(hull.normals[t], hull.normals[s]) > 1.0 - 1e-12
+                    && (hull.offsets[t] - hull.offsets[s]).abs() < 1e-10
+                {
+                    gid[s] = g;
+                    mem.push(s);
+                }
+            }
+            groups.push(mem);
         }
-        groups.push(mem);
-    }
+        (pv, radii, defect_err, hull, groups)
+    };
+    let nvp = pv.len();
     // facet boundary (directed, CCW seen from outside)
     let mut fb: Vec<Vec<(usize, usize)>> = vec![];
     for mem in &groups {
@@ -663,7 +854,33 @@ fn build_raw(p: &[V3], betas: &[f64], target_nv: f64) -> Result<TruePoly, String
         }
     }
     // unit-sphere positions: radial projection (origin is inside the polytope)
-    let y: Vec<V3> = x.iter().map(|q| geom::scale(*q, 1.0 / geom::norm(*q))).collect();
+    let mut y: Vec<V3> = x.iter().map(|q| geom::scale(*q, 1.0 / geom::norm(*q))).collect();
+    if neg {
+        // star polyhedron: map each face barycentrically onto the flat triangle of its unit
+        // directions, then project (long spikes would otherwise crowd into tiny caps)
+        let dir: Vec<V3> = pv.iter().map(|q| geom::scale(*q, 1.0 / geom::norm(*q))).collect();
+        for (v, q) in x.iter().enumerate() {
+            let mut best = (f64::NEG_INFINITY, [0.0; 3], 0);
+            for (ti, t) in hull.simplices.iter().enumerate() {
+                let (a, b, c) = (pv[t[0]], pv[t[1]], pv[t[2]]);
+                let nn = geom::cross(geom::sub(b, a), geom::sub(c, a));
+                let n2 = geom::dot(nn, nn);
+                let w = [
+                    geom::dot(nn, geom::cross(geom::sub(c, b), geom::sub(*q, b))) / n2,
+                    geom::dot(nn, geom::cross(geom::sub(a, c), geom::sub(*q, c))) / n2,
+                    geom::dot(nn, geom::cross(geom::sub(b, a), geom::sub(*q, a))) / n2,
+                ];
+                let mn = w[0].min(w[1]).min(w[2]) - (geom::dot(nn, geom::sub(*q, a)) / n2.sqrt()).abs();
+                if mn > best.0 {
+                    best = (mn, w, ti);
+                }
+            }
+            let t = hull.simplices[best.2];
+            let w = best.1;
+            let m = geom::add(geom::add(geom::scale(dir[t[0]], w[0]), geom::scale(dir[t[1]], w[1])), geom::scale(dir[t[2]], w[2]));
+            y[v] = geom::scale(m, 1.0 / geom::norm(m));
+        }
+    }
     let cones: Vec<usize> = (0..n).collect();
     let corners: Vec<usize> = (n..nvp).collect();
     let mesh = Mesh::from_sphere(y.clone(), faces.clone(), cones.clone());
@@ -692,6 +909,83 @@ fn build_raw(p: &[V3], betas: &[f64], target_nv: f64) -> Result<TruePoly, String
     };
     let flow_mesh = FlowMesh { vertices: x.clone(), faces: mesh.f.clone(), sphere_xyz: mesh.y.clone(), tip_ids: cones, seed };
     Ok(TruePoly { mesh, flow_mesh, x, corners, crease_edges, l0, u_off, radii, defect_err, fit_resid: f64::NAN, match_err: f64::NAN, match_iters: 0, warning: None })
+}
+
+/// Number of intersecting pairs among faces that share no vertex (segment-vs-triangle test with
+/// a uniform-grid broad phase).  0 for an embedded closed surface.
+pub fn self_intersections(x: &[V3], f: &[[usize; 3]]) -> usize {
+    let bb: Vec<(V3, V3)> = f
+        .iter()
+        .map(|t| {
+            let mut lo = x[t[0]];
+            let mut hi = x[t[0]];
+            for &v in &t[1..] {
+                for c in 0..3 {
+                    lo[c] = lo[c].min(x[v][c]);
+                    hi[c] = hi[c].max(x[v][c]);
+                }
+            }
+            (lo, hi)
+        })
+        .collect();
+    let mut glo = bb[0].0;
+    let mut ghi = bb[0].1;
+    for (lo, hi) in &bb {
+        for c in 0..3 {
+            glo[c] = glo[c].min(lo[c]);
+            ghi[c] = ghi[c].max(hi[c]);
+        }
+    }
+    let cell = bb.iter().map(|(lo, hi)| geom::norm(geom::sub(*hi, *lo))).sum::<f64>() / bb.len() as f64 * 1.5;
+    let key = |q: V3| -> [i64; 3] { [0, 1, 2].map(|c| ((q[c] - glo[c]) / cell).floor() as i64) };
+    let mut grid: HashMap<[i64; 3], Vec<usize>> = HashMap::new();
+    for (i, (lo, hi)) in bb.iter().enumerate() {
+        let (a, b) = (key(*lo), key(*hi));
+        for i0 in a[0]..=b[0] {
+            for i1 in a[1]..=b[1] {
+                for i2 in a[2]..=b[2] {
+                    grid.entry([i0, i1, i2]).or_default().push(i);
+                }
+            }
+        }
+    }
+    let seg_tri = |p0: V3, p1: V3, t: [usize; 3]| -> bool {
+        let (a, b, c) = (x[t[0]], x[t[1]], x[t[2]]);
+        let n = geom::cross(geom::sub(b, a), geom::sub(c, a));
+        let (d0, d1) = (geom::dot(n, geom::sub(p0, a)), geom::dot(n, geom::sub(p1, a)));
+        let eps = 1e-12 * geom::dot(n, n).sqrt() * cell;
+        if (d0 > eps && d1 > eps) || (d0 < -eps && d1 < -eps) || (d0 - d1).abs() < 1e-300 {
+            return false;
+        }
+        let s = d0 / (d0 - d1);
+        if !(-1e-9..=1.0 + 1e-9).contains(&s) {
+            return false;
+        }
+        let q = geom::add(p0, geom::scale(geom::sub(p1, p0), s));
+        let inside = |u: V3, v: V3| geom::dot(n, geom::cross(geom::sub(v, u), geom::sub(q, u))) > 1e-12 * geom::dot(n, n);
+        inside(a, b) && inside(b, c) && inside(c, a)
+    };
+    let mut seen = std::collections::HashSet::new();
+    let mut cnt = 0;
+    for v in grid.values() {
+        for (k, &i) in v.iter().enumerate() {
+            for &j in &v[k + 1..] {
+                let (ti, tj) = (f[i], f[j]);
+                if ti.iter().any(|a| tj.contains(a)) || !seen.insert((i.min(j), i.max(j))) {
+                    continue;
+                }
+                let (bi, bj) = (bb[i], bb[j]);
+                if (0..3).any(|c| bi.1[c] < bj.0[c] || bj.1[c] < bi.0[c]) {
+                    continue;
+                }
+                let hit = (0..3).any(|e| seg_tri(x[ti[e]], x[ti[(e + 1) % 3]], tj)) || (0..3).any(|e| seg_tri(x[tj[e]], x[tj[(e + 1) % 3]], ti));
+                if hit {
+                    cnt += 1;
+                }
+            }
+        }
+    }
+    cnt
 }
 
 #[cfg(test)]

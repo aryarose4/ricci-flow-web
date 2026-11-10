@@ -239,15 +239,26 @@ impl Session {
         }
         crate::fastunif::admissibility(&cfg.betas)?;
         let neg = c_curv < 0.0;
+        let mut tp_fallback: Option<String> = None;
         let true_poly = if cfg.seed == Seed::TruePolytope {
-            if neg {
-                return Err("True Polytope needs rho > 0 (cone angles summing to a convex polytope)".into());
-            }
             let b = if preview { crate::truepoly::build_preview } else { crate::truepoly::build };
-            Some(b(&cfg.positions, &cfg.betas, cfg.level).map_err(|e| format!("mesh failed: {e}"))?)
+            match b(&cfg.positions, &cfg.betas, cfg.level) {
+                Ok(tp) => Some(tp),
+                // rho < 0: the star-shaped polyhedron is not available for every configuration;
+                // fall back to the Polytope seed and say so
+                Err(e) if neg => {
+                    tp_fallback = Some(format!("True Polytope unavailable for these cones ({e}); started from the Polytope seed instead"));
+                    None
+                }
+                Err(e) => return Err(format!("mesh failed: {e}")),
+            }
         } else {
             None
         };
+        let mut cfg = cfg;
+        if tp_fallback.is_some() {
+            cfg.seed = Seed::Polytope;
+        }
         let (mesh, flow_mesh) = match &true_poly {
             Some(tp) => (tp.mesh.clone(), tp.flow_mesh.clone()),
             None => seedmesh::build_mesh(&cfg.positions, &cfg.betas, cfg.level).map_err(|e| format!("mesh failed: {e}"))?,
@@ -285,7 +296,7 @@ impl Session {
             quality: None,
             cf_main: None,
             cf_poly: None,
-            warning: true_poly.as_ref().and_then(|t| t.warning.clone()),
+            warning: tp_fallback.or_else(|| true_poly.as_ref().and_then(|t| t.warning.clone())),
             neg,
             tracker: None,
             prev: None,
@@ -421,10 +432,17 @@ impl Session {
         if self.cfg.anti.forward.is_some() {
             return self.neg_forward_step(fr);
         }
+        let tp0 = if self.prev.is_none() { self.true_poly_start(&fr.l) } else { None };
         let (rlz, tr) = (self.rlz.as_ref().unwrap(), self.tracker.as_mut().unwrap());
         let rho = fr.diag.rho;
         let (rf, m): (Realized, Mismatch) = match &self.prev {
-            None => tracker::cold_start(rlz, tr, &fr.l, &fr.k_defect, &fr.a_vertex, rho),
+            None => match tp0 {
+                Some(rf) => {
+                    let m = tracker::mismatch(tr, &rf.x, &self.mesh.e, &fr.l, &fr.k_defect, &fr.a_vertex, rho);
+                    (rf, m)
+                }
+                None => tracker::cold_start(rlz, tr, &fr.l, &fr.k_defect, &fr.a_vertex, rho),
+            },
             Some(p) => {
                 // opt-in (A) hidden metrics from the previous intrinsic frame, (B) prior toward the previous
                 // accepted shape (the final frame is not realizable here; see PROGRESS_anti-crumple.md)
@@ -482,7 +500,7 @@ impl Session {
         if let Some(g) = &self.good {
             row.vertices = g.x.clone();
         }
-        row.n_deep = realize::n_deep_folds(&row.vertices, &self.mesh.f, 0.15);
+        row.n_deep = self.n_deep_off_crease(&row.vertices);
         row.len_rel_max = m.len_rel_max;
         row.len_rel_rms = m.len_rel_rms;
         row.k_err_signed = m.k_err_signed;
@@ -638,10 +656,14 @@ impl Session {
                 self.n_hidden += nh;
                 best
             }
-            _ => {
-                let (rlz, tr) = (self.rlz.as_ref().unwrap(), self.tracker.as_ref().unwrap());
-                tracker::cold_start(rlz, tr, &fr.l, &fr.k_defect, &fr.a_vertex, rho).0
-            }
+            _ => match self.true_poly_start(&fr.l).filter(|_| self.prev.is_none()) {
+                // True Polytope (rho < 0): frame 0 IS the star-shaped polyhedron
+                Some(rf) => rf,
+                None => {
+                    let (rlz, tr) = (self.rlz.as_ref().unwrap(), self.tracker.as_ref().unwrap());
+                    tracker::cold_start(rlz, tr, &fr.l, &fr.k_defect, &fr.a_vertex, rho).0
+                }
+            },
         };
         let tr = self.tracker.as_mut().unwrap();
         let m = tracker::mismatch(tr, &rf.x, &self.mesh.e, &fr.l, &fr.k_defect, &fr.a_vertex, rho);
@@ -658,7 +680,7 @@ impl Session {
             ));
         }
         let mut row = self.row_of(&fr, &rf);
-        row.n_deep = realize::n_deep_folds(&row.vertices, &self.mesh.f, 0.15);
+        row.n_deep = self.n_deep_off_crease(&row.vertices);
         row.len_rel_max = m.len_rel_max;
         row.len_rel_rms = m.len_rel_rms;
         row.k_err_signed = m.k_err_signed;
@@ -690,6 +712,40 @@ impl Session {
         }
     }
 
+    /// True Polytope: the polyhedron scaled to the gauge of lengths `l` (exact edge lengths).
+    fn true_poly_start(&self, l: &[f64]) -> Option<Realized> {
+        let tp = self.true_poly.as_ref()?;
+        let e = &self.mesh.e;
+        let s = l.iter().zip(&tp.l0).map(|(a, b)| a / b).sum::<f64>() / e.len() as f64;
+        let x: Vec<V3> = tp.x.iter().map(|q| realize::geom::scale(*q, s)).collect();
+        let rel = realize::geom::len_rel(&x, e, l);
+        let dh = realize::geom::dihedrals(&x, &self.mesh.f);
+        Some(Realized {
+            ok: true,
+            len_rel_max: rel.iter().fold(0.0f64, |m, v| m.max(v.abs())),
+            len_rel_rms: rms(&rel),
+            n_reflex: dh.iter().filter(|&&d| d < -1e-9).count(),
+            min_dihedral: dh.iter().cloned().fold(f64::INFINITY, f64::min),
+            lm_iters: 0,
+            start: "true_polytope".into(),
+            warning: None,
+            x,
+        })
+    }
+
+    /// deep folds that are NOT concave crease edges of the True Polytope (rho < 0 polyhedra have
+    /// saddle corners, so some of their creases are concave by construction)
+    fn n_deep_off_crease(&self, x: &[V3]) -> usize {
+        let Some(tp) = &self.true_poly else { return realize::n_deep_folds(x, &self.mesh.f, 0.15) };
+        let cr: std::collections::HashSet<(usize, usize)> = tp.crease_edges.iter().map(|&k| (self.mesh.e[k][0], self.mesh.e[k][1])).collect();
+        let dh = realize::geom::dihedrals(x, &self.mesh.f);
+        realize::geom::face_edge_table(&self.mesh.f)
+            .iter()
+            .zip(&dh)
+            .filter(|(([a, b], _), &d)| d < -0.15 && !cr.contains(&(*a.min(b), *a.max(b))))
+            .count()
+    }
+
     /// True Polytope frame 0: the polytope itself (scaled to the gauge), rigidly aligned to the fit.
     fn apply_true_polytope(&self, row: &mut FrameOut) {
         let Some(tp) = &self.true_poly else { return };
@@ -703,7 +759,7 @@ impl Session {
         row.len_rel_rms = rms(&rel);
         row.n_reflex = dh.iter().filter(|&&d| d < -1e-9).count();
         row.min_dihedral = dh.iter().cloned().fold(f64::INFINITY, f64::min);
-        row.n_deep = dh.iter().filter(|&&d| d < -0.15).count();
+        row.n_deep = self.n_deep_off_crease(&x);
         row.vertices = x;
         row.polytope = true;
     }
