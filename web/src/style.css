@@ -62,7 +62,7 @@ body.dragging-cone,body.dragging-cone *{cursor:grabbing!important}
 .choice label{display:inline-flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;white-space:nowrap}
 .choice input{accent-color:var(--accent);margin:0}
 .row{display:flex;align-items:center;gap:8px;margin:3px 0}.row label{min-width:72px;white-space:nowrap}
-.row input[type=range]{flex:none;width:130px;margin:0}
+.row input[type=range]{flex:none;width:195px;margin:0}
 .row input[type=number]{width:58px;padding:2px 4px;font-size:12px}
 .rho{margin:8px 0 2px;font-size:13px;color:var(--mut)}.rho b{font-size:16px;color:var(--fg);font-weight:600}
 .btns{display:flex;align-items:center;gap:8px;margin:12px 0 6px}.btns button{margin:0}
@@ -79,3 +79,6 @@ body.dragging-cone,body.dragging-cone *{cursor:grabbing!important}
 
 #st-l:empty::after,#st-c:empty::after{content:'-'}
 #playbox[hidden]{display:none!important}
+
+#playbox #opt-fpsmooth{display:flex;align-items:center;gap:8px;margin:0}#playbox #opt-fpsmooth .optl{margin:0}#playbox #opt-fpsmooth .choice{flex-direction:row;gap:10px}
+#rnote{display:flex;align-items:center;gap:12px}#embnote{font-size:12px;color:var(--mut);font-weight:600}
