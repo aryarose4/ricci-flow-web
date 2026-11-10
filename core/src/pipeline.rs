@@ -152,12 +152,12 @@ pub enum Phase {
 impl Phase {
     pub fn name(&self) -> &'static str {
         match self {
-            Phase::Flow => "flowing (implicit BDF2 metric)",
+            Phase::Flow => "Computing Ricci Flow",
             Phase::CleanStart => "loading the flow in 3D: starting shape",
             Phase::BackwardInit | Phase::Backward => "loading the flow in 3D (backward from the uniformized end)",
             Phase::Finalize => "polytope frame / quality",
             Phase::Emit => "streaming frames",
-            Phase::Track => "flowing (true Ricci flow, rho < 0: implicit BDF2 metric, 3D shape by continuation)",
+            Phase::Track => "Computing Ricci Flow",
             Phase::FastSolve => "Fast Uniformizer: solving for the uniformized metric (implicit Newton from the far field)",
             Phase::FastRealize => "Fast Uniformizer: building the 3D surface",
             Phase::Done => "done",

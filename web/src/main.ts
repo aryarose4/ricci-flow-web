@@ -168,7 +168,7 @@ pworker.onmessage = (ev: MessageEvent<FromWorker>) => {
   if (m.type === 'preview') {
     previewMs = m.data.ms; view.setPreview(m.data, pReq!);
     $('st-v').textContent = String(m.data.vertices.length / 3); $('st-e').textContent = String(m.data.edges.length / 2); $('st-f').textContent = String(m.data.faces.length / 3);
-    $('warn').textContent = m.data.clamped ? 'Overlapping cone caps were shrunk' : '';
+    $('warn').textContent = '';
   } else { view.clear(); $('warn').textContent = m.message; }
 };
 
@@ -187,9 +187,9 @@ function onWorker(ev: MessageEvent<FromWorker>) {
     $('st-v').textContent = String(m.meta.sphereVertices.length / 3);
     $('st-e').textContent = String(m.meta.edges.length / 2);
     $('st-f').textContent = String(m.meta.sphereFaces.length / 3);
-    $('notice').hidden = true;
+    $('notice').hidden = true; $('embnote').hidden = true;
     if (m.meta.notice) $('warn').textContent = m.meta.notice;
-    setStatus(`Flowing${m.meta.request.fixture ? ` (${m.meta.request.fixture})` : ''}: rho = ${m.meta.rho.toPrecision(4)}`);
+    setStatus('Computing Ricci Flow');
   } else if (m.type === 'progress') {
     setStatus(m.phase); $('loadpct').textContent = `${Math.round(100 * m.progress)}%`;
   } else if (m.type === 'frame') {
@@ -197,7 +197,7 @@ function onWorker(ev: MessageEvent<FromWorker>) {
     const sl = $('play') as HTMLInputElement; sl.max = String(frames.length - 1);
     $('loadpct').textContent = `${Math.round(100 * f.progress)}%`;
     ($('playbtn') as HTMLButtonElement).disabled = false; sl.disabled = false;
-    if (f.embedNotice) $('warn').textContent = f.embedNotice;
+    if (f.embedNotice) $('embnote').hidden = false;
     player.show(f);
     if (f.quality) {
       setQuality(f.quality.label, f.quality.ok, f.quality.detail);
@@ -301,7 +301,7 @@ function toPreview(keepView = false) {
   if (running) { runId++; killWorker(); running = false; }
   frames = []; meta = null; cur = 0; cfShown = null; result = null;
   if (!keepView) { view.clear(); clearStats(); requestPreview(false); }
-  $('loadpct').textContent = ''; $('qnote').textContent = ''; $('qnote').title = ''; $('tval').textContent = ''; $('playlbl').textContent = ''; $('notice').hidden = true; $('warn').textContent = '';
+  $('loadpct').textContent = ''; $('qnote').textContent = ''; $('qnote').title = ''; $('tval').textContent = ''; $('playlbl').textContent = ''; $('notice').hidden = true; $('warn').textContent = ''; $('embnote').hidden = true;
   ($('play') as HTMLInputElement).max = '0'; ($('play') as HTMLInputElement).value = '0';
   setStatus(''); lock(false);
 }
