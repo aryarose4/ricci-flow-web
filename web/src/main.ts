@@ -47,19 +47,18 @@ function radios(host: HTMLElement, name: string, opts: Opt[], init: string, onCh
 }
 let seed: SeedSurface = 'gluing', level: Level = 'coarse', smoothOn = true;
 let seedNeg: boolean | null = null;
-/** True Polytope is rho > 0 only (the core refuses rho < 0): grey it out, and fall back to Polytope, when the cones force rho < 0. */
+/** True Polytope: convex polytope for rho > 0, star-shaped (non-convex) polyhedron for rho < 0; the core falls back to Polytope with a notice if the polyhedron cannot be built. */
 function buildSeedUI() {
   const neg = 2 - betas.reduce((a, b) => a + (1 - b), 0) < 0;
   if (neg === seedNeg) return;
   seedNeg = neg;
-  if (neg && seed === 'true_polytope') seed = 'polytope';
   radios($('seed'), 'seed', [['gluing', 'Cone Gluing'], ['smart', 'Smart Seed'], ['polytope', 'Polytope'],
-    ['true_polytope', 'True Polytope', neg ? 'rho > 0 only (these cone angles give rho < 0)' : undefined]], seed, v => { seed = v as SeedSurface; configChanged(); });
+    ['true_polytope', 'True Polytope']], seed, v => { seed = v as SeedSurface; configChanged(); });
 }
 const setSeedUI = (v: string) => { $('seed').querySelectorAll('input').forEach(i => { i.checked = i.value === v; }); };
 let mode: 'true_flow' | 'fast' = 'true_flow';
 /** Fast Uniformizer ignores the Initial Condition (it always starts from the flat-cone far field). */
-function setSeedEnabled(on: boolean) { const h = $('seed'); h.style.opacity = on ? '' : '.55'; h.title = on ? '' : 'Fast Uniformizer always starts from the flat-cone far field'; h.querySelectorAll('input').forEach(i => { i.disabled = !on || (i.value === 'true_polytope' && !!seedNeg); }); }
+function setSeedEnabled(on: boolean) { const h = $('seed'); h.style.opacity = on ? '' : '.55'; h.title = on ? '' : 'Fast Uniformizer always starts from the flat-cone far field'; h.querySelectorAll('input').forEach(i => { i.disabled = !on; }); }
 const setModeUI = radios($('realizer'), 'realizer', [['true_flow', 'True Ricci Flow'], ['fast', 'Fast Uniformizer']], mode, v => { mode = v as typeof mode; setSeedEnabled(mode !== 'fast'); configChanged(); });
 const setLevelUI = radios($('ressel'), 'ressel', [['coarse', 'Coarse'], ['medium', 'Medium'], ['fine', 'Fine'], ['extra', 'Extra Fine']], level, v => { level = v as Level; configChanged(); });
 const setSmoothUI = radios($('fpsmooth'), 'fpsmooth', [['off', 'Off'], ['on', 'On']], 'on', v => { smoothOn = v === 'on'; });

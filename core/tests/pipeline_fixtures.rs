@@ -128,3 +128,23 @@ fn overlapping_caps_and_bad_beta() {
     let bad = SessionConfig { positions: vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]], betas: vec![1.2, 0.6, 0.7], seed: Seed::Smart, level: page_level("smoke").unwrap(), anti: Default::default() };
     assert!(Session::new(bad).is_err());
 }
+
+#[test]
+fn true_polytope_rho_neg_frame0_is_the_polyhedron() {
+    let cfg = SessionConfig {
+        positions: vec![[0.7, 0.0], [-0.35, 0.606218], [-0.35, -0.606218]],
+        betas: vec![0.2, 0.3, 0.4],
+        seed: Seed::TruePolytope,
+        level: page_level("coarse").unwrap(),
+        anti: ricci_core::pipeline::AntiCrumple { forward: Some(Default::default()), ..Default::default() },
+    };
+    let mut s = Session::new(cfg).unwrap();
+    assert!(s.true_poly.is_some());
+    let rows = s.run_all().unwrap();
+    let r0 = &rows[0];
+    assert_eq!(r0.start, "true_polytope");
+    assert!(r0.len_rel_max < 1e-12, "frame0 len err {}", r0.len_rel_max);
+    assert_eq!(r0.embed_state, "following");
+    assert!(rows.iter().all(|r| r.gb_resid.abs() < 1e-10 && r.cone_defect_err < 1e-10));
+    assert_eq!(ricci_core::truepoly::self_intersections(&r0.vertices, &s.mesh.f), 0);
+}

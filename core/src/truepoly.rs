@@ -1038,4 +1038,37 @@ mod tests {
         cr.sort();
         assert_eq!(folded, cr);
     }
+    #[test]
+    fn negative_star_polyhedra() {
+        let cfgs: Vec<(Vec<f64>, Vec<[f64; 2]>)> = vec![
+            (vec![0.2, 0.3, 0.4], vec![[0.7, 0.0], [-0.35, 0.606218], [-0.35, -0.606218]]),
+            (vec![0.05, 0.05, 0.05], vec![[0.7, 0.0], [-0.35, 0.606218], [-0.35, -0.606218]]),
+            (vec![0.3; 4], vec![[0.7, 0.0], [0.0, 0.7], [-0.7, 0.0], [0.0, -0.7]]),
+            (vec![0.25, 0.45, 0.35, 0.3], vec![[0.6, 0.1], [-0.2, 0.7], [-0.6, -0.3], [0.3, -0.5]]),
+            (vec![0.1, 0.1, 0.1, 0.95], vec![[0.7, 0.0], [0.0, 0.7], [-0.7, 0.0], [0.0, 0.1]]),
+            (vec![0.2; 5], vec![[0.7, 0.0], [0.216, 0.666], [-0.566, 0.411], [-0.566, -0.411], [0.216, -0.666]]),
+            (vec![0.1, 0.15, 0.2, 0.25, 0.3, 0.35], vec![[0.7, 0.0], [0.35, 0.606], [-0.35, 0.606], [-0.7, 0.0], [-0.35, -0.606], [0.35, -0.606]]),
+        ];
+        for (betas, pos) in cfgs {
+            let tp = build_preview(&pos, &betas, seedmesh::page_level("coarse").unwrap()).unwrap();
+            let g = defects_and_areas(&tp.mesh.f, &tp.mesh.opp, &tp.l0, tp.mesh.nv());
+            let n = betas.len();
+            for (i, b) in betas.iter().enumerate() {
+                assert!((g.k[i] - 2.0 * PI * (1.0 - b)).abs() < 1e-12, "cone {i} of {betas:?}");
+            }
+            assert!((g.k.iter().sum::<f64>() - 4.0 * PI).abs() < 1e-11);
+            assert!(tp.corners.iter().map(|&c| g.k[c]).sum::<f64>() < 0.0);
+            for v in n + tp.corners.len()..tp.mesh.nv() {
+                assert!(g.k[v].abs() < 1e-11);
+            }
+            assert_eq!(self_intersections(&tp.x, &tp.mesh.f), 0, "{betas:?}");
+        }
+    }
+    #[test]
+    fn self_intersection_detects_overlap() {
+        let x = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.2, 0.2, -0.5], [0.3, 0.2, 0.5], [0.2, 0.3, 0.5]];
+        assert_eq!(self_intersections(&x, &[[0, 1, 2], [3, 4, 5]]), 1);
+        let y: Vec<V3> = x.iter().map(|q| [q[0], q[1], if q[2] == 0.0 { 0.0 } else { q[2] + 1.0 }]).collect();
+        assert_eq!(self_intersections(&y, &[[0, 1, 2], [3, 4, 5]]), 0);
+    }
 }
