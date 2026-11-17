@@ -23,6 +23,7 @@ const BARE = params.has('bare');
 let dark = true; // the Python page defaults to dark; the choice is remembered under the same key
 if (BARE) {
   document.documentElement.classList.add('bare');
+  if (window.parent !== window) document.documentElement.classList.add('framed');
   const t = params.get('theme');
   if (t === 'light' || t === 'dark') dark = t === 'dark';
 } else {

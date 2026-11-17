@@ -85,5 +85,5 @@ body.dragging-cone,body.dragging-cone *{cursor:grabbing!important}
 
 /* Embedded in aryayae.com (?bare): host page supplies the nav, title, theme and background. */
 html.bare .topnav,html.bare #topbar h3{display:none}
-html.bare body{background:transparent;overflow:hidden}
+html.bare.framed body{background:transparent;overflow:hidden}
 html.bare #page{padding:0 0 4px}
