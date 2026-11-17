@@ -19,6 +19,7 @@ export interface Host {
   frames(): PFrame[];
   set(fr: PFrame): void;        // display this frame (true or synthesized)
   setSlider(k: number): void;   // move the slider to true frame k
+  setSliderAt?(A: PFrame, B: PFrame, s: number): void; // smooth playback: put the slider a fraction s of the way from A to B
   follow(): boolean;            // keep the slider following playback
   smooth(): boolean;
   setPlayLabel(text: string): void;
@@ -231,7 +232,7 @@ export class Player {
       if (i > c.shown) {
         c.shown = i;
         this.put(this.synth(c.B, segEval(c.pl, i / c.n), c.A, i, c.n), true);
-        if (H.follow()) H.setSlider(2 * i >= c.n ? this.idx(c.B) : this.idx(c.A));
+        if (H.follow()) { H.setSlider(2 * i >= c.n ? this.idx(c.B) : this.idx(c.A)); H.setSliderAt?.(c.A, c.B, i / c.n); }
       }
     } else if (c.shown === 0 && H.follow()) { c.shown = 1; H.setSlider(this.idx(c.A)); } // smooth off: hold A (already shown) until the step
     this.raf = requestAnimationFrame(this.frame);

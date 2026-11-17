@@ -223,7 +223,7 @@ function onWorker(ev: MessageEvent<FromWorker>) {
     setStatus(m.phase); $('loadpct').textContent = `${Math.round(100 * m.progress)}%`;
   } else if (m.type === 'frame') {
     const f = m.frame as Fr; f.V = triples(f.vertices); frames.push(f);
-    const sl = $('play') as HTMLInputElement; sl.max = String(frames.length - 1);
+    const sl = $('play') as HTMLInputElement; sl.max = String(SL);
     $('loadpct').textContent = `${Math.round(100 * f.progress)}%`;
     ($('playbtn') as HTMLButtonElement).disabled = false; sl.disabled = false;
     if (f.embedNotice) $('embnote').hidden = false;
@@ -272,18 +272,36 @@ function display(p: PFrame) {
   $('st-c').textContent = fmt(to.coneDefectErr);
   if (!fr.fp) {
     cur = Math.max(0, frames.indexOf(to));
-    const sl = $('play') as HTMLInputElement; sl.value = String(cur);
+    const sl = $('play') as HTMLInputElement; sl.value = String(posOf(cur));
     $('tval').textContent = to.fastStats ? 'uniformized (Fast)' : `t = ${to.t.toPrecision(3)}`;
     $('playlbl').textContent = `frame ${cur + 1} / ${meta.nFrames ?? frames.length}` + embedTag(to);
   }
   updateLegend();
 }
+// ---------- playback slider: linear in flow time t ----------
+/** Slider resolution; position = SL * (t - t_first) / (t_last - t_first), or frame index spacing if t is unusable. */
+const SL = 1000;
+function tSpan() { const a = frames[0]?.t, b = frames[frames.length - 1]?.t; return a != null && b != null && isFinite(b - a) && b > a ? [a, b - a] : null; }
+function tPos(t: number): number | null { const sp = tSpan(); return sp ? Math.round(SL * Math.min(1, Math.max(0, (t - sp[0]) / sp[1]))) : null; }
+function posOf(k: number): number { const f = frames[k]; const v = f ? tPos(f.t) : null; return v ?? (frames.length > 1 ? Math.round(SL * k / (frames.length - 1)) : 0); }
+/** The true frame nearest a slider position. */
+function frameAt(v: number): number {
+  if (!frames.length) return 0;
+  if (!tSpan()) return Math.round(v / SL * (frames.length - 1));
+  let best = 0, bd = Infinity; frames.forEach((_, k) => { const d = Math.abs(posOf(k) - v); if (d < bd) { bd = d; best = k; } });
+  return best;
+}
 const player = new Player({
   frames: () => frames, set: display,
-  setSlider(k) { if (k < 0) return; cur = k; ($('play') as HTMLInputElement).value = String(k); const f = frames[k]; if (f) { $('tval').textContent = `t = ${f.t.toPrecision(3)}`; $('playlbl').textContent = `frame ${k + 1} / ${meta?.nFrames ?? frames.length}` + embedTag(f); } },
+  setSlider(k) { if (k < 0) return; cur = k; ($('play') as HTMLInputElement).value = String(posOf(k)); const f = frames[k]; if (f) { $('tval').textContent = `t = ${f.t.toPrecision(3)}`; $('playlbl').textContent = `frame ${k + 1} / ${meta?.nFrames ?? frames.length}` + embedTag(f); } },
   follow: () => true, smooth: () => smoothOn,
   setPlayLabel: t => { $('playbtn').textContent = t; },
-  sliderValue: () => parseInt(($('play') as HTMLInputElement).value, 10),
+  sliderValue: () => frameAt(+($('play') as HTMLInputElement).value),
+  setSliderAt(A, B, s) { // smooth playback: slider and t readout move continuously in t
+    const a = (A as Fr).t, b = (B as Fr).t; if (!(isFinite(a) && isFinite(b))) return;
+    const t = a + s * (b - a), v = tPos(t); if (v == null) return;
+    ($('play') as HTMLInputElement).value = String(v); $('tval').textContent = `t = ${t.toPrecision(3)}`;
+  },
 });
 /** rho < 0: say when the 3D view is not a faithful shape of this frame (as the Python page's frame label). */
 function embedTag(f: FlowFrame) {
@@ -317,10 +335,10 @@ function finish(stopped: boolean) {
 /** The Python page ends a run on the final frame. */
 function showEnd() {
   const k = frames.length - 1; if (k < 0 || running || cur === k) return;
-  player.seek(frames[k]); cur = k; ($('play') as HTMLInputElement).value = String(k); showFrame();
+  player.seek(frames[k]); cur = k; ($('play') as HTMLInputElement).value = String(posOf(k)); showFrame();
 }
 
-($('play') as HTMLInputElement).oninput = e => { const k = +(e.target as HTMLInputElement).value; player.seek(frames[k]); cur = k; showFrame(); };
+($('play') as HTMLInputElement).oninput = e => { const k = frameAt(+(e.target as HTMLInputElement).value); player.seek(frames[k]); cur = k; showFrame(); };
 $('playbtn').onclick = () => player.play();
 
 function clearStats() { for (const id of ['st-v', 'st-e', 'st-f', 'st-l', 'st-c']) $(id).textContent = ''; }
