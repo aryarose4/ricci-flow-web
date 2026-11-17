@@ -96,3 +96,13 @@ html.bare #page{padding:0 0 4px}
 html.bare #panel{display:flex;flex-wrap:wrap;width:auto;max-width:none;left:auto;transform:none;overflow:hidden}
 html.bare #panel>section{flex:1 0 auto;padding:12px 14px 8px;margin:-1px 0 0 -1px;border-top:1px solid var(--div);border-left:1px solid var(--div)}
 @media(max-width:920px){html.bare #panel>section+section{border-top:1px solid var(--div);border-left:1px solid var(--div)}}
+/* Embedded: slightly smaller text, narrower sliders, and Solver/View options kept on one line. */
+html.bare body{font-size:13px}
+html.bare .choice label{font-size:12px}
+html.bare .optl{font-size:11px}
+html.bare .rho{font-size:12px}html.bare .rho b{font-size:14px}
+html.bare .row input[type=range]{width:160px}
+html.bare #bottom{font-size:11px}
+html.bare #col-solver,html.bare #col-view{flex-wrap:nowrap;column-gap:16px}
+html.bare #col-solver>h4,html.bare #col-view>h4{position:absolute}
+html.bare #col-solver,html.bare #col-view{position:relative;padding-top:33px}
