@@ -104,5 +104,5 @@ html.bare .rho{font-size:12px}html.bare .rho b{font-size:14px}
 html.bare .row input[type=range]{width:160px}
 html.bare #bottom{font-size:11px}
 html.bare #col-solver,html.bare #col-view{flex-wrap:nowrap;column-gap:16px}
-html.bare #col-solver>h4,html.bare #col-view>h4{position:absolute}
+html.bare #col-solver>h4,html.bare #col-view>h4{position:absolute;top:12px;left:14px}
 html.bare #col-solver,html.bare #col-view{position:relative;padding-top:33px}
