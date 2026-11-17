@@ -392,7 +392,7 @@ pub fn build_opts(
                 Some(_) => break,
                 None => {
                     // radial p = target here, so the radial build is the pre-conformal seed
-                    tp.warning = Some(format!("True Polytope: conformal coordinates unavailable ({e}); using radial positions (cone conformal positions approximate)"));
+                    tp.warning = Some(format!("Polytope: conformal coordinates unavailable ({e}); using radial positions (cone conformal positions approximate)"));
                     return Ok(tp);
                 }
             }

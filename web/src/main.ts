@@ -47,13 +47,13 @@ function radios(host: HTMLElement, name: string, opts: Opt[], init: string, onCh
 }
 let seed: SeedSurface = 'gluing', level: Level = 'coarse', smoothOn = true;
 let seedNeg: boolean | null = null;
-/** True Polytope: convex polytope for rho > 0, star-shaped (non-convex) polyhedron for rho < 0; the core falls back to Polytope with a notice if the polyhedron cannot be built. */
+/** Polytope (internally true_polytope): convex polytope for rho > 0, star-shaped (non-convex) polyhedron for rho < 0; the core falls back to the four-corner polytope with a notice if the polyhedron cannot be built. */
 function buildSeedUI() {
   const neg = 2 - betas.reduce((a, b) => a + (1 - b), 0) < 0;
   if (neg === seedNeg) return;
   seedNeg = neg;
-  radios($('seed'), 'seed', [['gluing', 'Cone Gluing'], ['smart', 'Smart Seed'], ['polytope', 'Polytope'],
-    ['true_polytope', 'True Polytope']], seed, v => { seed = v as SeedSurface; configChanged(); });
+  radios($('seed'), 'seed', [['gluing', 'Cone Gluing'], ['smart', 'Smart Seed'],
+    ['true_polytope', 'Polytope']], seed, v => { seed = v as SeedSurface; configChanged(); });
 }
 const setSeedUI = (v: string) => { $('seed').querySelectorAll('input').forEach(i => { i.checked = i.value === v; }); };
 let mode: 'true_flow' | 'fast' = 'true_flow';

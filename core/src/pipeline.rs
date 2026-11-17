@@ -247,7 +247,7 @@ impl Session {
                 // rho < 0: the star-shaped polyhedron is not available for every configuration;
                 // fall back to the Polytope seed and say so
                 Err(e) if neg => {
-                    tp_fallback = Some(format!("True Polytope unavailable for these cones ({e}); started from the Polytope seed instead"));
+                    tp_fallback = Some(format!("Polytope unavailable for these cones ({e}); started from a four-corner polytope instead"));
                     None
                 }
                 Err(e) => return Err(format!("mesh failed: {e}")),
