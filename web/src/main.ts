@@ -16,8 +16,18 @@ type Level = 'coarse' | 'medium' | 'fine' | 'extra';
 type Fr = FlowFrame & PFrame;
 
 // ---------- theme ----------
+// Embedded mode (?bare): the host page (aryayae.com) owns the nav bar and the theme.
+// Protocol: host sends {type:'ricci-flow-theme', theme}; we reply {type:'ricci-flow-height', height}.
+
+const BARE = params.has('bare');
 let dark = true; // the Python page defaults to dark; the choice is remembered under the same key
-try { const s = localStorage.getItem('sr-theme'); if (s) dark = s === 'dark'; } catch { /* ignore */ }
+if (BARE) {
+  document.documentElement.classList.add('bare');
+  const t = params.get('theme');
+  if (t === 'light' || t === 'dark') dark = t === 'dark';
+} else {
+  try { const s = localStorage.getItem('sr-theme'); if (s) dark = s === 'dark'; } catch { /* ignore */ }
+}
 
 const view = new View3D($('cv') as HTMLCanvasElement, $('lbls'));
 const cf = new CfDiscs([$('cf-n') as HTMLCanvasElement, $('cf-s') as HTMLCanvasElement]);
@@ -27,7 +37,7 @@ function applyTheme() {
   document.documentElement.dataset.theme = dark ? 'dark' : 'light';
   $('theme').textContent = dark ? 'Light mode' : 'Dark mode';
   view.setTheme(dark); cf.setTheme(dark);
-  try { localStorage.setItem('sr-theme', dark ? 'dark' : 'light'); } catch { /* ignore */ }
+  if (!BARE) try { localStorage.setItem('sr-theme', dark ? 'dark' : 'light'); } catch { /* ignore */ }
   redraw();
 }
 $('theme').onclick = () => { dark = !dark; applyTheme(); };
@@ -359,3 +369,21 @@ function setConfig(c: { positions?: number[][]; betas?: number[]; seed?: SeedSur
 
 buildSliders(4); lock(false);
 applyTheme();
+
+if (BARE && window.parent !== window) {
+  window.addEventListener('message', (e) => {
+    if (e.source !== window.parent) return;
+    const d = e.data;
+    if (d && d.type === 'ricci-flow-theme' && (d.theme === 'light' || d.theme === 'dark')) {
+      const next = d.theme === 'dark';
+      if (next !== dark) { dark = next; applyTheme(); }
+    }
+  });
+  let lastH = 0;
+  const postHeight = () => {
+    const h = Math.ceil($('page').getBoundingClientRect().height);
+    if (h > 0 && h !== lastH) { lastH = h; window.parent.postMessage({ type: 'ricci-flow-height', height: h }, '*'); }
+  };
+  new ResizeObserver(postHeight).observe($('page'));
+  postHeight();
+}

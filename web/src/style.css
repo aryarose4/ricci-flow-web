@@ -82,3 +82,8 @@ body.dragging-cone,body.dragging-cone *{cursor:grabbing!important}
 
 #playbox #opt-fpsmooth{display:flex;align-items:center;gap:8px;margin:0}#playbox #opt-fpsmooth .optl{margin:0}#playbox #opt-fpsmooth .choice{flex-direction:row;gap:10px}
 #rnote{display:flex;align-items:center;gap:12px}#embnote{font-size:12px;color:var(--mut);font-weight:600}
+
+/* Embedded in aryayae.com (?bare): host page supplies the nav, title, theme and background. */
+html.bare .topnav,html.bare #topbar h3{display:none}
+html.bare body{background:transparent;overflow:hidden}
+html.bare #page{padding:0 0 4px}
