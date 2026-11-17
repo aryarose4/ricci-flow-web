@@ -87,3 +87,6 @@ body.dragging-cone,body.dragging-cone *{cursor:grabbing!important}
 html.bare .topnav,html.bare #topbar h3{display:none}
 html.bare.framed body{background:transparent;overflow:hidden}
 html.bare #page{padding:0 0 4px}
+/* Declare the scheme so a framed (transparent) page is not painted on an opaque white backdrop when it mismatches the host. */
+:root,:root[data-theme=dark]{color-scheme:dark}
+:root[data-theme=light]{color-scheme:light}
