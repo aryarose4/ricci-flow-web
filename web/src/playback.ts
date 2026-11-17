@@ -14,7 +14,7 @@ interface Prep { R: M3; ca: V3; cb: V3; Bp: Cloud; k: V3; a: number; J: number; 
 interface Plan { n: number; m: number; yA: Float64Array; yB: Float64Array; m0: Float64Array; m1: Float64Array }
 
 /** A true frame as the player sees it (V = vertex triples); `fp` is set on synthesized sub-frames. */
-export interface PFrame { V: Cloud; fp?: { from: PFrame; to: PFrame; i: number; n: number }; fpxA?: Cloud; fpxP?: Prep }
+export interface PFrame { V: Cloud; t?: number; fp?: { from: PFrame; to: PFrame; i: number; n: number }; fpxA?: Cloud; fpxP?: Prep }
 export interface Host {
   frames(): PFrame[];
   set(fr: PFrame): void;        // display this frame (true or synthesized)
@@ -109,12 +109,19 @@ function tang(d1: Float64Array, d2: Float64Array, h1: number, h2: number, m: num
 }
 const slope = (y1: Float64Array, y0: Float64Array, h: number) => { const o = new Float64Array(y1.length); for (let i = 0; i < o.length; i++) o[i] = (y1[i] - y0[i]) / h; return o; };
 
-function seg(P: PFrame | null, Af: PFrame, Bf: PFrame, Nf: PFrame | null): Plan {
+/** Knot spacing: flow-time gaps when `useT` and both times are known and increasing, else 1 (uniform). */
+const gap = (a: PFrame | null, b: PFrame | null, useT: boolean) => {
+  const d = useT && a && b && a.t != null && b.t != null ? b.t - a.t : NaN;
+  return d > 0 && isFinite(d) ? d : 1;
+};
+function seg(P: PFrame | null, Af: PFrame, Bf: PFrame, Nf: PFrame | null, useT = false): Plan {
   const A = Af.V, B = Bf.V, pa = prep(A, Bf), m = A.length, n = pa.n, ca = pa.ca, cb = pa.cb, R = pa.R, S: Cloud = new Array(m);
   for (let i = 0; i < m; i++) S[i] = [A[i][0] - ca[0], A[i][1] - ca[1], A[i][2] - ca[2]];
-  // every true frame gets equal wall time, so use uniform knot spacing (h = 1): jump-based spacing made the speed
-  // jump at knots and the curve wiggle around small changes next to big ones
-  const qI = [1, 0, 0, 0], qB = qsign(quat(R), qI), yA = knot(S, qI, ca), yB = knot(pa.Bp, qB, cb), dA = slope(yB, yA, 1);
+  // Knots are spaced by flow time when playing proportionally to t (useT), so the speed stays continuous across knots;
+  // live streaming gives every true frame equal wall time and keeps uniform spacing (h = 1). Tangents are computed
+  // per unit of that spacing and scaled by this segment's length hA for evaluation on [0, 1].
+  const hA = gap(Af, Bf, useT), hP = gap(P, Af, useT), hN = gap(Bf, Nf, useT);
+  const qI = [1, 0, 0, 0], qB = qsign(quat(R), qI), yA = knot(S, qI, ca), yB = knot(pa.Bp, qB, cb), dA = slope(yB, yA, hA);
   let m0 = new Float64Array(yA.length), m1 = new Float64Array(yA.length);
   if (P) {
     const p1 = prep(P.V, Af), R1 = p1.R, cp = p1.ca, Pt: Cloud = new Array(m);
@@ -124,7 +131,7 @@ function seg(P: PFrame | null, Af: PFrame, Bf: PFrame, Nf: PFrame | null): Plan 
     }
     const R1T: M3 = [[R1[0][0], R1[1][0], R1[2][0]], [R1[0][1], R1[1][1], R1[2][1]], [R1[0][2], R1[1][2], R1[2][2]]];
     const yP = knot(Pt, qsign(quat(R1T), qI), cp);
-    m0 = tang(slope(yA, yP, 1), dA, 1, 1, m);
+    m0 = tang(slope(yA, yP, hP), dA, hP, hA, m);
   }
   if (Nf) {
     const p2 = prep(B, Nf), R2 = p2.R, Nt: Cloud = new Array(m);
@@ -135,8 +142,9 @@ function seg(P: PFrame | null, Af: PFrame, Bf: PFrame, Nf: PFrame | null): Plan 
     const RR: M3 = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
     for (let r = 0; r < 3; r++) for (let c = 0; c < 3; c++) for (let k = 0; k < 3; k++) RR[r][c] += R2[r][k] * R[k][c];
     const yN = knot(Nt, qsign(quat(RR), qB), p2.cb);
-    m1 = tang(dA, slope(yN, yB, 1), 1, 1, m);
+    m1 = tang(dA, slope(yN, yB, hN), hA, hN, m);
   }
+  if (hA !== 1) for (let i = 0; i < m0.length; i++) { m0[i] *= hA; m1[i] *= hA; }
   return { n, m, yA, yB, m0, m1 };
 }
 function segEval(s: Plan, t: number): Cloud {
@@ -153,6 +161,8 @@ function segEval(s: Plan, t: number): Cloud {
 /** Wall-clock player. Every TRUE-frame transition lasts FRAME_MS whether smooth is on or off (live backlog excepted); smooth only
  *  adds intermediate frames, whose number is capped by what the measured display cost allows, and which are skipped (never stretched)
  *  when a render is late. Driven by requestAnimationFrame, position = elapsed / FRAME_MS. */
+/** Play runs proportionally to flow time t and lasts PLAY_MS from first to last frame (FRAME_MS per frame if t is unusable). */
+export const PLAY_MS = 7500, PLAY_MAXSUB = 600; // long late segments get up to ~screen-rate sub-frames
 export const FRAME_MS = 300, LIVE_MS = 220, BACKLOG_MS = 60, COST_SAFETY = 1.6, MIN_STEP_MS = 16;
 interface Seg { A: PFrame; B: PFrame; t0: number; dur: number; n: number; pl: Plan | null; shown: number }
 export interface PlayStats { planMs: number[]; dispSub: number[]; dispTrue: number[]; nEval: number[] }
@@ -162,7 +172,7 @@ export class Player {
   private queue: PFrame[] = []; private cur: Seg | null = null;
   private raf: number | null = null; playing = false;
   private cost = 8; // EMA of one synthesized-frame display (ms)
-  private plans = new WeakMap<PFrame, { pl: Plan; p: boolean; n: boolean }>();
+  private plans = new WeakMap<PFrame, { pl: Plan; p: boolean; n: boolean; u: boolean }>();
   stats: PlayStats = { planMs: [], dispSub: [], dispTrue: [], nEval: [] };
   constructor(private H: Host) {}
 
@@ -176,6 +186,11 @@ export class Player {
   clear() { if (this.raf != null) { cancelAnimationFrame(this.raf); this.raf = null; } this.cur = null; this.queue = []; this.playing = false; this.H.setPlayLabel('Play'); }
   busy() { return this.raf != null; }
 
+  /** Flow-time span of the whole run (last minus first frame), or 0 if the frames carry no usable, increasing t. */
+  private tSpan() {
+    const F = this.H.frames(), a = F[0]?.t, b = F[F.length - 1]?.t;
+    return a != null && b != null && isFinite(b - a) && b > a ? b - a : 0;
+  }
   /** Start the next queued segment at time t0. */
   private begin(t0: number): boolean {
     const H = this.H; if (!this.queue.length || !this.lastReal) return false;
@@ -184,15 +199,16 @@ export class Player {
     if (H.smooth() && A.V.length === B.V.length && !backlog) {
       const P = this.prevReal && this.prevReal.V.length === A.V.length ? this.prevReal : null;
       const N = this.queue.length && this.queue[0].V.length === B.V.length ? this.queue[0] : null;
-      const hit = this.plans.get(B);
-      if (hit && hit.p === !!P && hit.n === !!N) pl = hit.pl;
-      else { const t = performance.now(); pl = seg(P, A, B, N); this.stats.planMs.push(performance.now() - t); this.plans.set(B, { pl, p: !!P, n: !!N }); }
+      const hit = this.plans.get(B), u = this.playing && this.tSpan() > 0;
+      if (hit && hit.p === !!P && hit.n === !!N && hit.u === u) pl = hit.pl;
+      else { const t = performance.now(); pl = seg(P, A, B, N, u); this.stats.planMs.push(performance.now() - t); this.plans.set(B, { pl, p: !!P, n: !!N, u }); }
     }
-    const dur = this.playing ? FRAME_MS : backlog ? BACKLOG_MS : LIVE_MS;
+    const span = this.tSpan(), dt = B.t != null && A.t != null ? B.t - A.t : NaN;
+    const dur = this.playing ? (span > 0 && dt >= 0 ? PLAY_MS * dt / span : FRAME_MS) : backlog ? BACKLOG_MS : LIVE_MS;
     // during Play every true frame gets the same wall time, so fill it with as many sub-frames as rendering allows
     // (small early jumps too); live streaming keeps the jump-based count
     const cap = Math.floor(dur / Math.max(this.cost * COST_SAFETY, MIN_STEP_MS));
-    if (pl && (this.playing || pl.n > 1)) n = Math.max(1, Math.min(this.playing ? MAXSUB : pl.n, cap));
+    if (pl && (this.playing || pl.n > 1)) n = Math.max(1, Math.min(this.playing ? PLAY_MAXSUB : pl.n, cap));
     this.cur = { A, B, t0, dur, n, pl: n > 1 ? pl : null, shown: 0 };
     if (n > 1) this.stats.nEval.push(n);
     return true;
