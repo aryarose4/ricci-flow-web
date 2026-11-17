@@ -96,13 +96,32 @@ view.onLegend = updateLegend;
 // ---------- cone controls ----------
 let betas: number[] = [], positions: [number, number][] = [];
 const defaultBetas = [0.6, 0.7, 0.5, 0.8, 0.7, 0.6, 0.5, 0.8];
-/** 8 cones: cube vertices (octahedral symmetry), stereographic from the north pole. */
-function cube8(): [number, number][] {
-  const out: [number, number][] = [], c = 1 / Math.sqrt(3);
-  for (const z of [c, -c]) for (let k = 0; k < 4; k++) { const a = Math.PI / 4 + k * Math.PI / 2, r = Math.SQRT2 * c; out.push([r * Math.cos(a) / (1 - z), r * Math.sin(a) / (1 - z)]); }
-  return out;
+/**
+ * Default cone layouts, built as unit vectors on the sphere and mapped to the stereographic plane
+ * (x, y) / (1 - z), where the north pole (0, 0, 1) is at infinity and so can never hold a cone.
+ *   2: antipodal pair through the hemisphere centres, tilted 10 degrees off the poles
+ *   3: equilateral triangle on a great circle through the south pole, one cone at the south pole
+ *   4: regular tetrahedron with a vertex at the south pole
+ *   5: the 3-cone triangle plus the two poles of its great circle (triangular bipyramid)
+ *   6: regular octahedron resting on a face (no vertex at either pole)
+ *   7: regular pentagon on a great circle through the south pole plus its two poles (pentagonal bipyramid)
+ *   8: cube vertices (octahedral symmetry)
+ */
+type V = [number, number, number];
+function layout(n: number): V[] {
+  const ring = (k: number): V[] => Array.from({ length: k }, (_, i) => { const t = 2 * Math.PI * i / k; return [Math.sin(t), 0, -Math.cos(t)]; });
+  switch (n) {
+    case 2: { const t = 10 * Math.PI / 180; return [[-Math.sin(t), 0, Math.cos(t)], [Math.sin(t), 0, -Math.cos(t)]]; }
+    case 3: return ring(3);
+    case 4: { const z = 1 / 3, r = Math.sqrt(8) / 3; return [[0, 0, -1], ...[0, 1, 2].map(k => [r * Math.cos(2 * Math.PI * k / 3), r * Math.sin(2 * Math.PI * k / 3), z] as V)]; }
+    case 5: return [...ring(3), [0, 1, 0], [0, -1, 0]];
+    case 6: { const z = 1 / Math.sqrt(3), r = Math.sqrt(2 / 3); return [-z, z].flatMap((h, j) => [0, 1, 2].map(k => { const t = 2 * Math.PI * k / 3 + j * Math.PI / 3; return [r * Math.cos(t), r * Math.sin(t), h] as V; })); }
+    case 7: return [...ring(5), [0, 1, 0], [0, -1, 0]];
+    case 8: { const c = 1 / Math.sqrt(3), out: V[] = []; for (const z of [c, -c]) for (let k = 0; k < 4; k++) { const t = Math.PI / 4 + k * Math.PI / 2, r = Math.SQRT2 * c; out.push([r * Math.cos(t), r * Math.sin(t), z]); } return out; }
+    default: return Array.from({ length: n }, (_, i) => { const t = 2 * Math.PI * i / n; return [Math.sin(t), Math.cos(t), 0] as V; });
+  }
 }
-function ngon(n: number): [number, number][] { if (n === 8) return cube8(); return Array.from({ length: n }, (_, i) => [0.7 * Math.cos(2 * Math.PI * i / n), 0.7 * Math.sin(2 * Math.PI * i / n)] as [number, number]); }
+function ngon(n: number): [number, number][] { return layout(n).map(([x, y, z]) => [x / (1 - z), y / (1 - z)] as [number, number]); }
 function rhoOf() { return (betas.reduce((a, b) => a + b, 0) - (betas.length - 2)) / 2; }
 function updateRho() {
   const r = rhoOf();
