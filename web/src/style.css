@@ -90,3 +90,8 @@ html.bare #page{padding:0 0 4px}
 /* Declare the scheme so a framed (transparent) page is not painted on an opaque white backdrop when it mismatches the host. */
 :root,:root[data-theme=dark]{color-scheme:dark}
 :root[data-theme=light]{color-scheme:light}
+/* Embedded: the panel spans the views' width and stays three columns down to a narrower breakpoint. */
+html.bare #panel{width:auto;max-width:none;left:auto;transform:none;grid-template-columns:auto auto auto}
+html.bare #panel>section{padding:12px 14px 8px}
+@media(max-width:920px){html.bare #panel{grid-template-columns:auto auto auto}html.bare #panel>section+section{border-top:0;border-left:1px solid var(--div)}}
+@media(max-width:760px){html.bare #panel{grid-template-columns:1fr}html.bare #panel>section+section{border-left:0;border-top:1px solid var(--div)}}
