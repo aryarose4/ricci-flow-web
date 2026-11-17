@@ -90,8 +90,9 @@ html.bare #page{padding:0 0 4px}
 /* Declare the scheme so a framed (transparent) page is not painted on an opaque white backdrop when it mismatches the host. */
 :root,:root[data-theme=dark]{color-scheme:dark}
 :root[data-theme=light]{color-scheme:light}
-/* Embedded: the panel spans the views' width and stays three columns down to a narrower breakpoint. */
-html.bare #panel{width:auto;max-width:none;left:auto;transform:none;grid-template-columns:auto auto auto}
-html.bare #panel>section{padding:12px 14px 8px}
-@media(max-width:920px){html.bare #panel{grid-template-columns:auto auto auto}html.bare #panel>section+section{border-top:0;border-left:1px solid var(--div)}}
-@media(max-width:760px){html.bare #panel{grid-template-columns:1fr}html.bare #panel>section+section{border-left:0;border-top:1px solid var(--div)}}
+/* Embedded: the panel spans the views' width; sections keep their natural width and wrap to new rows
+   when they no longer fit. Dividers are drawn on each section's top/left edge and the panel clips the
+   ones that land on its outer edge, so only interior dividers show. */
+html.bare #panel{display:flex;flex-wrap:wrap;width:auto;max-width:none;left:auto;transform:none;overflow:hidden}
+html.bare #panel>section{flex:1 0 auto;padding:12px 14px 8px;margin:-1px 0 0 -1px;border-top:1px solid var(--div);border-left:1px solid var(--div)}
+@media(max-width:920px){html.bare #panel>section+section{border-top:1px solid var(--div);border-left:1px solid var(--div)}}
